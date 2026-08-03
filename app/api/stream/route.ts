@@ -9,43 +9,61 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
+  // 1. Opsi Utama: Audius API (Full Song Stream, Free & Public API)
   try {
-    // 1. Cari lagu menggunakan Deezer Official Public API (Resmi & Tanpa Auth/Key)
-    const deezerSearchUrl = `https://api.deezer.com/search?q=${encodeURIComponent(query)}&limit=1`;
-    
-    const searchRes = await axios.get(deezerSearchUrl, {
-      timeout: 6000,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-    });
+    // Dapatkan host Audius API yang aktif
+    const hostRes = await axios.get('https://api.audius.co', { timeout: 4000 });
+    const hosts = hostRes.data?.data;
+    const audiusHost = Array.isArray(hosts) && hosts.length > 0 ? hosts[0] : 'https://discoveryprovider.audius.co';
 
-    const track = searchRes.data?.data?.[0];
+    // Search track di Audius
+    const searchRes = await axios.get(
+      `${audiusHost}/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=ARS_MUSIC_APP`,
+      { timeout: 5000 }
+    );
 
-    if (!track) {
-      return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
-    }
+    const tracks = searchRes.data?.data;
+    if (Array.isArray(tracks) && tracks.length > 0) {
+      const track = tracks[0];
+      const streamUrl = `${audiusHost}/v1/tracks/${track.id}/stream?app_name=ARS_MUSIC_APP`;
 
-    // 2. Deezer menyediakan Direct MP3 Audio Stream yang sangat cepat dan ramah Vercel
-    if (track.preview) {
       return NextResponse.json({
         success: true,
         title: track.title || query,
-        artist: track.artist?.name || 'Unknown Artist',
-        album: track.album?.title || '',
-        streamUrl: track.preview, // Direct MP3 Stream URL resmi dari Deezer CDN!
-        thumbnail: track.album?.cover_xl || track.album?.cover_medium || '',
-        durationSeconds: track.duration || 30,
+        artist: track.user?.name || 'Unknown Artist',
+        streamUrl: streamUrl, // Direct Stream Full Track!
+        thumbnail: track.artwork?.['1000x1000'] || track.artwork?.['480x480'] || '',
+        durationSeconds: track.duration || 0,
       });
     }
-
-    return NextResponse.json({ error: 'Stream URL tidak tersedia untuk lagu ini' }, { status: 404 });
-  } catch (error: any) {
-    console.error('Deezer Stream Error:', error?.message || error);
-    return NextResponse.json(
-      { error: 'Gagal memproses audio stream', details: error?.message || String(error) },
-      { status: 500 }
-    );
+  } catch (err: any) {
+    console.warn('Audius Stream Warning:', err?.message || err);
   }
+
+  // 2. Fallback: Jamendo Music Public API (Free Full Song Stream)
+  try {
+    const jamendoRes = await axios.get(
+      `https://api.jamendo.com/v3.0/tracks/?client_id=56d306e0&format=json&limit=1&search=${encodeURIComponent(query)}`,
+      { timeout: 5000 }
+    );
+
+    const track = jamendoRes.data?.results?.[0];
+    if (track && track.audio) {
+      return NextResponse.json({
+        success: true,
+        title: track.name || query,
+        artist: track.artist_name || 'Unknown Artist',
+        streamUrl: track.audio, // Direct MP3 Full Duration Stream
+        thumbnail: track.image || '',
+        durationSeconds: track.duration || 0,
+      });
+    }
+  } catch (err: any) {
+    console.warn('Jamendo Stream Warning:', err?.message || err);
+  }
+
+  return NextResponse.json(
+    { error: 'Gagal menemukan full audio stream' },
+    { status: 404 }
+  );
 }
