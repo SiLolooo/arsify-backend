@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     let artist = 'Official Artist';
     let thumbnail = '';
 
-    // 1. Cari Video ID via YouTube Data API v3 Resmi
+    // 1. Cari Video ID via YouTube Data API v3 Resmi (Jika API Key ada)
     if (YOUTUBE_API_KEY) {
       try {
         const ytRes = await axios.get(
@@ -35,22 +35,25 @@ export async function GET(request: Request) {
           thumbnail = item.snippet?.thumbnails?.high?.url || '';
         }
       } catch (e) {
-        console.warn('YT Search API warning:', e);
+        console.warn('YT API Search fallback triggered');
       }
     }
 
-    // Fallback search jika API Key belum dipasang / error
+    // 2. Fallback Direct Scrape YouTube Search (100% Tanpa Piped / Domain Pihak Ketiga)
     if (!videoId) {
-      const searchRes = await axios.get(
-        `https://pub-api.piped.video/search?q=${encodeURIComponent(query + ' official audio')}&filter=music_songs`,
-        { timeout: 5000 }
-      );
-      const item = searchRes.data?.items?.[0];
-      if (item) {
-        videoId = item.url?.replace('/watch?v=', '');
-        title = item.title;
-        artist = item.uploaderName;
-        thumbnail = item.thumbnail;
+      const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query + ' official audio')}`;
+      const searchRes = await axios.get(searchUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        timeout: 5000,
+      });
+
+      // Extract Video ID dari HTML YouTube secara native
+      const matches = searchRes.data.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+      if (matches && matches[1]) {
+        videoId = matches[1];
       }
     }
 
@@ -58,25 +61,24 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
     }
 
-    // 2. Ekstraksi Direct MP3 Audio Stream Secara Native Menggunakan @distube/ytdl-core
+    // 3. Extractor Native ytdl-core Langsung Dari Container Railway
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const info = await ytdl.getInfo(videoUrl);
 
-    // Filter format audio saja dengan bitrate tertinggi
+    // Filter audio formats
     const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
     
     if (!audioFormats || audioFormats.length === 0) {
       return NextResponse.json({ error: 'Format audio tidak ditemukan' }, { status: 502 });
     }
 
-    // Ambil format audio dengan kualitas terbaik
     const bestAudio = audioFormats[0];
 
     return NextResponse.json({
       success: true,
       title: title || info.videoDetails.title,
       artist: artist || info.videoDetails.author.name,
-      streamUrl: bestAudio.url, // DIRECT GOOGLEVIDEO AUDIO MP3 FULL DURATION!
+      streamUrl: bestAudio.url, // DIRECT GOOGLEVIDEO MP3 FULL DURATION!
       thumbnail: thumbnail || info.videoDetails.thumbnails.pop()?.url || '',
       durationSeconds: Number(info.videoDetails.lengthSeconds) || 0,
     });
