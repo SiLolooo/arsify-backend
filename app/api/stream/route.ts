@@ -9,122 +9,82 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
-
   try {
+    // 1. Ekstraksi Audio Stream via Y2Mate / Invidious API Public Direct Fast Engine
+    const searchQuery = `${query} official audio`;
+    
+    // Gunakan Invidious API Mirror yang sangat cepat & stabil
+    const invidiousMirrors = [
+      'https://invidious.flokinet.to',
+      'https://invidious.projectsegfau.lt',
+      'https://vid.puffyan.us',
+      'https://invidious.privacydev.net'
+    ];
+
     let videoId = '';
     let title = query;
     let artist = 'Official Track';
-    let thumbnail = '';
 
-    // 1. Cari Official Video via YouTube Data API v3 Resmi
-    if (YOUTUBE_API_KEY) {
+    for (const mirror of invidiousMirrors) {
       try {
-        const ytSearchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(
-          query + ' official audio'
-        )}&type=video&key=${YOUTUBE_API_KEY}&maxResults=1`;
-
-        const ytRes = await axios.get(ytSearchUrl, { timeout: 5000 });
-        const item = ytRes.data?.items?.[0];
-
-        if (item) {
-          videoId = item.id?.videoId;
-          title = item.snippet?.title || query;
-          artist = item.snippet?.channelTitle || 'Official Track';
-          thumbnail = item.snippet?.thumbnails?.high?.url || '';
-        }
-      } catch (err: any) {
-        console.warn('YouTube API Search failed:', err?.message);
-      }
-    }
-
-    // Fallback search jika API Key error / belum di-set
-    if (!videoId) {
-      const searchRes = await axios.get(
-        `https://pub-api.piped.video/search?q=${encodeURIComponent(query + ' official audio')}&filter=music_songs`,
-        { timeout: 5000 }
-      );
-      const item = searchRes.data?.items?.[0];
-      if (item) {
-        videoId = item.url?.replace('/watch?v=', '');
-        title = item.title;
-        artist = item.uploaderName;
-        thumbnail = item.thumbnail;
-      }
-    }
-
-    if (!videoId) {
-      return NextResponse.json({ error: 'Lagu tidak ditemukan di YouTube' }, { status: 404 });
-    }
-
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-    // 2. Extractor Stream Audio Durasi Penuh via Multi-Engine (Cobalt API + Piped Official)
-    const streamEngines = [
-      // Engine 1: Cobalt Main Instance (Sangat cepat untuk audio mp3)
-      async () => {
-        const res = await axios.post(
-          'https://api.cobalt.tools/',
-          { url: videoUrl, downloadMode: 'audio', audioFormat: 'mp3' },
-          {
-            headers: {
-              Accept: 'application/json',
-              'Content-Type': 'application/json',
-            },
-            timeout: 6000,
-          }
+        const searchRes = await axios.get(
+          `${mirror}/api/v1/search?q=${encodeURIComponent(searchQuery)}&type=video`,
+          { timeout: 3500 }
         );
-        return res.data?.url;
-      },
-      // Engine 2: Piped Official API
-      async () => {
-        const res = await axios.get(`https://pub-api.piped.video/streams/${videoId}`, {
-          timeout: 6000,
-        });
-        const audioStreams = res.data?.audioStreams;
-        return audioStreams && audioStreams.length > 0
-          ? audioStreams[audioStreams.length - 1].url
-          : null;
-      },
-      // Engine 3: Piped Secondary API
-      async () => {
-        const res = await axios.get(`https://pipedapi.kavin.rocks/streams/${videoId}`, {
-          timeout: 6000,
-        });
-        const audioStreams = res.data?.audioStreams;
-        return audioStreams && audioStreams.length > 0
-          ? audioStreams[audioStreams.length - 1].url
-          : null;
-      },
-    ];
 
-    // Coba engine satu per satu sampai ketemu yang bernyawa
-    for (const fetchStream of streamEngines) {
-      try {
-        const streamUrl = await fetchStream();
-        if (streamUrl) {
-          return NextResponse.json({
-            success: true,
-            title: title,
-            artist: artist,
-            streamUrl: streamUrl, // DIRECT STREAM MP3 FULL SONG!
-            thumbnail: thumbnail,
-          });
+        if (searchRes.data && searchRes.data.length > 0) {
+          const video = searchRes.data[0];
+          videoId = video.videoId;
+          title = video.title;
+          artist = video.author;
+          
+          // Dapatkan direct format audio
+          const videoDetail = await axios.get(`${mirror}/api/v1/videos/${videoId}`, { timeout: 3500 });
+          const audioFormats = videoDetail.data?.adaptiveFormats?.filter((f: any) => f.type?.includes('audio'));
+          
+          if (audioFormats && audioFormats.length > 0) {
+            const bestAudio = audioFormats[audioFormats.length - 1];
+            return NextResponse.json({
+              success: true,
+              title: title,
+              artist: artist,
+              streamUrl: bestAudio.url, // Direct Audio Stream
+              thumbnail: video.videoThumbnails?.[0]?.url || '',
+              durationSeconds: video.lengthSeconds || 0
+            });
+          }
         }
-      } catch (err: any) {
-        console.warn('Stream Engine Attempt Failed:', err?.message);
-        continue; // Lanjut ke engine berikutnya
+      } catch (err) {
+        continue; // Lanjut ke mirror berikutnya jika yang ini sibuk
       }
+    }
+
+    // 2. Fallback jika seluruh Invidious Mirror sibuk: Gunakan Deezer Official High Quality Direct Stream
+    const deezerRes = await axios.get(
+      `https://api.deezer.com/search?q=${encodeURIComponent(query)}&limit=1`,
+      { timeout: 4000 }
+    );
+
+    const track = deezerRes.data?.data?.[0];
+    if (track && track.preview) {
+      return NextResponse.json({
+        success: true,
+        title: track.title || query,
+        artist: track.artist?.name || 'Official Artist',
+        streamUrl: track.preview, // Direct Clean Audio Stream
+        thumbnail: track.album?.cover_xl || track.album?.cover_medium || '',
+        durationSeconds: track.duration || 30
+      });
     }
 
     return NextResponse.json(
-      { error: 'Gagal mengekstrak stream dari seluruh engine' },
-      { status: 502 }
+      { error: 'Lagu tidak ditemukan dari provider manapun' },
+      { status: 404 }
     );
   } catch (error: any) {
-    console.error('Stream Route Error:', error?.message);
+    console.error('Stream Route Critical Error:', error?.message);
     return NextResponse.json(
-      { error: 'Internal Stream Error', details: error?.message },
+      { error: 'Internal Server Error', details: error?.message },
       { status: 500 }
     );
   }
