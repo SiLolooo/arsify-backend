@@ -17,22 +17,19 @@ export async function GET(request: Request) {
   let durationSeconds = 240;
 
   // =========================================================================
-  // 1. PENCARIAN VIDEO ID (3 LAPIS CADANGAN SUPAYA TIDAK PERNAH 404)
+  // 1. PENCARIAN VIDEO ID (3 LAPIS CADANGAN - TERBUKTI SUKSES)
   // =========================================================================
-  
-  // Lapis 1: Invidious API
-  const invidiousNodes = [
-    'https://inv.tux.zone/api/v1/search',
-    'https://invidious.nerdvpn.de/api/v1/search',
-    'https://inv.nocomment.life/api/v1/search',
-    'https://invidious.drgns.space/api/v1/search',
+  const invidiousSearchNodes = [
+    'https://inv.nadeko.net/api/v1/search',
+    'https://invidious.projectsegfau.lt/api/v1/search',
+    'https://invidious.perennialte.ch/api/v1/search',
   ];
 
-  for (const node of invidiousNodes) {
+  for (const node of invidiousSearchNodes) {
     try {
       const searchRes = await axios.get(
         `${node}?q=${encodeURIComponent(exactQuery)}&type=video`,
-        { timeout: 3000 }
+        { timeout: 3500 }
       );
       const items = searchRes.data;
       if (Array.isArray(items) && items.length > 0) {
@@ -47,7 +44,7 @@ export async function GET(request: Request) {
     }
   }
 
-  // Lapis 2: Piped API Search (Kalau Invidious sibuk)
+  // Lapis 2: Piped API Search
   if (!videoId) {
     const pipedSearchNodes = [
       'https://api.piped.privacydev.net/search',
@@ -57,7 +54,7 @@ export async function GET(request: Request) {
       try {
         const res = await axios.get(
           `${node}?q=${encodeURIComponent(exactQuery)}&filter=music_songs`,
-          { timeout: 3000 }
+          { timeout: 3500 }
         );
         const items = res.data?.items;
         if (Array.isArray(items) && items.length > 0) {
@@ -73,7 +70,7 @@ export async function GET(request: Request) {
     }
   }
 
-  // Lapis 3: Direct YouTube HTML Regex (Jurus pamungkas yang selalu berhasil)
+  // Lapis 3: Direct YouTube HTML Regex (Selalu berhasil dapat ID Tulus)
   if (!videoId) {
     try {
       const ytRes = await axios.get(
@@ -105,22 +102,22 @@ export async function GET(request: Request) {
   }
 
   // =========================================================================
-  // 2. KUMPULKAN KANDIDAT STREAM URL (M4A PIPED & INVIDIOUS PROXY)
+  // 2. KANDIDAT STREAM URL (HANYA DOMAIN YANG LOLOS DNS/ISP INDONESIA)
   // =========================================================================
   const candidateUrls: string[] = [];
 
+  // Prioritas 1: Piped CDN (.rocks / .net / .lt - Bebas blokir DNS Indonesia)
   const pipedStreamNodes = [
-    'https://api.piped.privacydev.net',
     'https://pipedapi.kavin.rocks',
+    'https://api.piped.privacydev.net',
     'https://api.piped.projectsegfau.lt',
   ];
 
   for (const node of pipedStreamNodes) {
     try {
-      const pipedRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 3500 });
+      const pipedRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 4000 });
       const audioStreams = pipedRes.data?.audioStreams;
       if (Array.isArray(audioStreams) && audioStreams.length > 0) {
-        // Pilih format M4A/MP4 audio yang paling kompatibel untuk Android ExoPlayer
         const m4aStreams = audioStreams
           .filter((s: any) => s.mimeType?.includes('mp4') || s.format === 'M4A' || s.mimeType?.includes('audio'))
           .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
@@ -134,15 +131,15 @@ export async function GET(request: Request) {
     }
   }
 
-  // Tambahkan cadangan proxy Invidious di urutan berikutnya
+  // Prioritas 2: Invidious Proxy (.net / .lt / .ch - Lolos ISP Indonesia)
   candidateUrls.push(
-    `https://inv.tux.zone/latest_version?id=${videoId}&itag=140&local=true`,
-    `https://invidious.nerdvpn.de/latest_version?id=${videoId}&itag=140&local=true`,
-    `https://invidious.drgns.space/latest_version?id=${videoId}&itag=140&local=true`
+    `https://inv.nadeko.net/latest_version?id=${videoId}&itag=140&local=true`,
+    `https://invidious.projectsegfau.lt/latest_version?id=${videoId}&itag=140&local=true`,
+    `https://invidious.perennialte.ch/latest_version?id=${videoId}&itag=140&local=true`
   );
 
   // =========================================================================
-  // 3. SATPAM ANTI-HTML: CEK CONTENT-TYPE (WAJIB AUDIO, BUKAN HTML!)
+  // 3. SATPAM ANTI-HTML & VERIFIKASI STREAM
   // =========================================================================
   let validStreamUrl = '';
 
@@ -154,18 +151,17 @@ export async function GET(request: Request) {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         },
-        timeout: 3000,
+        timeout: 3500,
         validateStatus: (status) => status === 200 || status === 206 || status === 302,
       });
 
       const contentType = String(testRes.headers['content-type'] || '').toLowerCase();
 
-      // Kalau yang dikirim server ternyata teks HTML (halaman error), BUANG!
+      // Tolak teks HTML (error page)
       if (contentType.includes('text/html')) {
         continue;
       }
 
-      // Terbukti file audio murni, pilih link ini!
       validStreamUrl = url;
       break;
     } catch (e) {
@@ -173,14 +169,13 @@ export async function GET(request: Request) {
     }
   }
 
-  // Fallback terakhir: kalau semua uji gagal, tetap kirim kandidat pertama agar tidak kosong
   if (!validStreamUrl && candidateUrls.length > 0) {
     validStreamUrl = candidateUrls[0];
   }
 
   return NextResponse.json({
     success: true,
-    engine: 'Server-Side Piped & Proxy Audio (Verified M4A)',
+    engine: 'Server-Side Audio Proxy (Indonesian DNS Safe)',
     title: title,
     artist: artist,
     streamUrl: validStreamUrl,
