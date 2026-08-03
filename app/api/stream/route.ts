@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import ytdl from '@distube/ytdl-core';
+import axios from 'axios';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -9,52 +9,90 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  try {
-    // 1. Cari video via YouTube API Search Scraper ringan
-    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
-    const searchRes = await fetch(searchUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-    });
+  // 1. Coba Search via High-Quality Audio Engine Proxy (Full Track 320kbps)
+  const proxyEndpoints = [
+    `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}`,
+    `https://saavn.me/search/songs?query=${encodeURIComponent(query)}`,
+  ];
 
-    const html = await searchRes.text();
-    const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+  for (const endpoint of proxyEndpoints) {
+    try {
+      const res = await axios.get(endpoint, {
+        timeout: 5000,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      });
 
-    if (!videoIdMatch || !videoIdMatch[1]) {
-      return NextResponse.json({ error: 'Video YouTube tidak ditemukan' }, { status: 404 });
+      const results = res.data?.data?.results || res.data?.results;
+
+      if (results && Array.isArray(results) && results.length > 0) {
+        const song = results[0];
+        const downloadUrls = song?.downloadUrl;
+
+        if (Array.isArray(downloadUrls) && downloadUrls.length > 0) {
+          // Ambil stream MP3 bitrate tertinggi (biasanya 320kbps) -> FULL LAGU
+          const fullAudioUrl = downloadUrls[downloadUrls.length - 1]?.url;
+
+          let coverUrl = '';
+          if (Array.isArray(song?.image) && song.image.length > 0) {
+            coverUrl = song.image[song.image.length - 1]?.url || song.image[0]?.url;
+          }
+
+          if (fullAudioUrl) {
+            return NextResponse.json({
+              success: true,
+              title: song?.name || query,
+              artist: song?.primaryArtists || song?.singers || 'Unknown Artist',
+              streamUrl: fullAudioUrl, // Direct Link Audio Durasi Penuh!
+              thumbnail: coverUrl,
+              durationSeconds: song?.duration || 0,
+            });
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn(`Proxy ${endpoint} failed:`, err?.message);
+      continue;
     }
-
-    const videoId = videoIdMatch[1];
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-    // 2. Extract Direct Stream URL Durasi Penuh memakai ytdl-core
-    const info = await ytdl.getInfo(videoUrl);
-    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
-
-    if (!audioFormats || audioFormats.length === 0) {
-      return NextResponse.json({ error: 'Audio stream tidak ditemukan' }, { status: 404 });
-    }
-
-    // Ambil format audio dengan audioBitrate tertinggi
-    const bestAudio = audioFormats.reduce((prev, curr) =>
-      (curr.audioBitrate || 0) > (prev.audioBitrate || 0) ? curr : prev
-    );
-
-    return NextResponse.json({
-      success: true,
-      title: info.videoDetails.title,
-      artist: info.videoDetails.author.name,
-      streamUrl: bestAudio.url, // Direct Stream Full Song!
-      thumbnail: info.videoDetails.thumbnails[0]?.url || '',
-      durationSeconds: info.videoDetails.lengthSeconds,
-    });
-  } catch (error: any) {
-    console.error('YTDL Error:', error);
-    return NextResponse.json(
-      { error: 'Gagal memproses full audio stream', details: error?.message || String(error) },
-      { status: 500 }
-    );
   }
+
+  // 2. Fallback: SoundCloud Public API Search
+  try {
+    const scSearch = await axios.get(
+      `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=iZ864q28A9S2m5583802380238023&limit=1`,
+      { timeout: 5000 }
+    );
+
+    const track = scSearch.data?.collection?.[0];
+    if (track && track.media?.transcodings) {
+      const progressiveFormat = track.media.transcodings.find(
+        (t: any) => t.format?.protocol === 'progressive'
+      );
+
+      if (progressiveFormat) {
+        const streamRes = await axios.get(
+          `${progressiveFormat.url}?client_id=iZ864q28A9S2m5583802380238023`
+        );
+        if (streamRes.data?.url) {
+          return NextResponse.json({
+            success: true,
+            title: track.title,
+            artist: track.user?.username || 'Unknown',
+            streamUrl: streamRes.data.url,
+            thumbnail: track.artwork_url || '',
+            durationSeconds: Math.floor(track.duration / 1000),
+          });
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('SoundCloud Fallback Error:', err?.message);
+  }
+
+  return NextResponse.json(
+    { error: 'Gagal mengekstrak full audio stream' },
+    { status: 502 }
+  );
 }
