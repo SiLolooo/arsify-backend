@@ -9,90 +9,53 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  // 1. Coba Search via High-Quality Audio Engine Proxy (Full Track 320kbps)
-  const proxyEndpoints = [
-    `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}`,
-    `https://saavn.me/search/songs?query=${encodeURIComponent(query)}`,
-  ];
-
-  for (const endpoint of proxyEndpoints) {
-    try {
-      const res = await axios.get(endpoint, {
-        timeout: 5000,
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-      });
-
-      const results = res.data?.data?.results || res.data?.results;
-
-      if (results && Array.isArray(results) && results.length > 0) {
-        const song = results[0];
-        const downloadUrls = song?.downloadUrl;
-
-        if (Array.isArray(downloadUrls) && downloadUrls.length > 0) {
-          // Ambil stream MP3 bitrate tertinggi (biasanya 320kbps) -> FULL LAGU
-          const fullAudioUrl = downloadUrls[downloadUrls.length - 1]?.url;
-
-          let coverUrl = '';
-          if (Array.isArray(song?.image) && song.image.length > 0) {
-            coverUrl = song.image[song.image.length - 1]?.url || song.image[0]?.url;
-          }
-
-          if (fullAudioUrl) {
-            return NextResponse.json({
-              success: true,
-              title: song?.name || query,
-              artist: song?.primaryArtists || song?.singers || 'Unknown Artist',
-              streamUrl: fullAudioUrl, // Direct Link Audio Durasi Penuh!
-              thumbnail: coverUrl,
-              durationSeconds: song?.duration || 0,
-            });
-          }
-        }
-      }
-    } catch (err: any) {
-      console.warn(`Proxy ${endpoint} failed:`, err?.message);
-      continue;
-    }
-  }
-
-  // 2. Fallback: SoundCloud Public API Search
   try {
-    const scSearch = await axios.get(
-      `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=iZ864q28A9S2m5583802380238023&limit=1`,
+    // 1. Cari video ID di YouTube via Invidious/Search publik
+    const searchRes = await axios.get(
+      `https://vid.puffyan.us/api/v1/search?q=${encodeURIComponent(query)}&type=video`,
       { timeout: 5000 }
     );
 
-    const track = scSearch.data?.collection?.[0];
-    if (track && track.media?.transcodings) {
-      const progressiveFormat = track.media.transcodings.find(
-        (t: any) => t.format?.protocol === 'progressive'
-      );
-
-      if (progressiveFormat) {
-        const streamRes = await axios.get(
-          `${progressiveFormat.url}?client_id=iZ864q28A9S2m5583802380238023`
-        );
-        if (streamRes.data?.url) {
-          return NextResponse.json({
-            success: true,
-            title: track.title,
-            artist: track.user?.username || 'Unknown',
-            streamUrl: streamRes.data.url,
-            thumbnail: track.artwork_url || '',
-            durationSeconds: Math.floor(track.duration / 1000),
-          });
-        }
-      }
+    const videoId = searchRes.data?.[0]?.videoId;
+    if (!videoId) {
+      return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
     }
-  } catch (err: any) {
-    console.error('SoundCloud Fallback Error:', err?.message);
-  }
 
-  return NextResponse.json(
-    { error: 'Gagal mengekstrak full audio stream' },
-    { status: 502 }
-  );
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+    // 2. Tembak ke Cobalt API Instance (API Khusus Extractor Media Bebas Bot)
+    const cobaltRes = await axios.post(
+      'https://cobalt-api.kwiatek.xyz/', // Public Cobalt Instance
+      {
+        url: videoUrl,
+        downloadMode: 'audio',
+        audioFormat: 'mp3',
+      },
+      {
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        timeout: 8000,
+      }
+    );
+
+    if (cobaltRes.data?.url) {
+      return NextResponse.json({
+        success: true,
+        title: searchRes.data[0].title || query,
+        artist: searchRes.data[0].author || 'Unknown',
+        streamUrl: cobaltRes.data.url, // Full Audio MP3 Link!
+        thumbnail: searchRes.data[0].videoThumbnails?.[0]?.url || '',
+      });
+    }
+
+    return NextResponse.json({ error: 'Gagal mendapatkan audio dari Cobalt' }, { status: 500 });
+  } catch (error: any) {
+    console.error('Cobalt Extractor Error:', error?.response?.data || error?.message);
+    return NextResponse.json(
+      { error: 'Internal Extractor Error', details: error?.message },
+      { status: 500 }
+    );
+  }
 }
