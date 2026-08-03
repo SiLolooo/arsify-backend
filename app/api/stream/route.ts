@@ -9,60 +9,55 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  // Daftar mirror endpoint CDN publik
-  const mirrorApis = [
-    `https://saavn.me/search/songs?query=${encodeURIComponent(query)}`,
-    `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}`,
+  // Daftar Piped / Invidious API instances yang aktif & stabil
+  const pipedInstances = [
+    'https://pipedapi.kavin.rocks',
+    'https://api.piped.private.coffee',
+    'https://pipedapi.mha.fi',
   ];
 
-  for (const apiUrl of mirrorApis) {
+  for (const instance of pipedInstances) {
     try {
-      console.log(`Mencoba fetch via Axios ke: ${apiUrl}`);
+      // 1. Cari video di YouTube via Piped Instance
+      const searchRes = await axios.get(
+        `${instance}/search?q=${encodeURIComponent(query)}&filter=music_songs`,
+        { timeout: 5000 }
+      );
 
-      const response = await axios.get(apiUrl, {
-        timeout: 7000,
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json',
-        },
-      });
+      const items = searchRes.data?.items;
+      if (items && items.length > 0) {
+        const firstSong = items[0];
+        const videoId = firstSong.url?.replace('/watch?v=', '');
 
-      const data = response.data;
-      const results = data?.data?.results || data?.results;
+        if (videoId) {
+          // 2. Ambil detail stream audio
+          const streamsRes = await axios.get(`${instance}/streams/${videoId}`, {
+            timeout: 5000,
+          });
 
-      if (results && Array.isArray(results) && results.length > 0) {
-        const song = results[0];
-        const downloadUrls = song?.downloadUrl;
+          const audioStreams = streamsRes.data?.audioStreams;
+          if (audioStreams && audioStreams.length > 0) {
+            // Ambil stream audio dengan m4a / webm kualitas terbaik
+            const bestAudio = audioStreams[audioStreams.length - 1];
 
-        if (Array.isArray(downloadUrls) && downloadUrls.length > 0) {
-          // Ambil URL direct MP3 dengan bitrate tertinggi
-          const directAudioUrl = downloadUrls[downloadUrls.length - 1]?.url;
-
-          let thumbnailUrl = '';
-          if (Array.isArray(song?.image) && song.image.length > 0) {
-            thumbnailUrl = song.image[song.image.length - 1]?.url || song.image[0]?.url;
-          }
-
-          if (directAudioUrl) {
             return NextResponse.json({
               success: true,
-              title: song?.name || query,
-              artist: song?.primaryArtists || song?.singers || 'Unknown Artist',
-              streamUrl: directAudioUrl,
-              thumbnail: thumbnailUrl,
+              title: firstSong.title || query,
+              artist: firstSong.uploaderName || 'Unknown Artist',
+              streamUrl: bestAudio.url,
+              thumbnail: firstSong.thumbnail,
             });
           }
         }
       }
     } catch (error: any) {
-      console.warn(`Gagal terhubung ke ${apiUrl}:`, error?.message || error);
-      continue; // Coba endpoint mirror berikutnya
+      console.warn(`Piped instance ${instance} failed:`, error?.message);
+      continue; // Coba instance berikutnya jika yang ini gagal
     }
   }
 
   return NextResponse.json(
-    { error: 'Semua API Mirror gagal dijangkau oleh jaringan lokal' },
+    { error: 'Gagal mengekstrak audio stream dari semua instance' },
     { status: 502 }
   );
 }
