@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import axios from 'axios';
+import ytdl from '@distube/ytdl-core';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -9,52 +9,58 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  try {
-    // 1. Cari video ID di YouTube via Invidious/Search publik
-    const searchRes = await axios.get(
-      `https://vid.puffyan.us/api/v1/search?q=${encodeURIComponent(query)}&type=video`,
-      { timeout: 5000 }
-    );
+  const YOUTUBE_COOKIE = process.env.YOUTUBE_COOKIE || '';
 
-    const videoId = searchRes.data?.[0]?.videoId;
-    if (!videoId) {
-      return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
+  try {
+    // 1. Search video via YouTube Scraping
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    const searchRes = await fetch(searchUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+
+    const html = await searchRes.text();
+    const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+
+    if (!videoIdMatch || !videoIdMatch[1]) {
+      return NextResponse.json({ error: 'Video tidak ditemukan' }, { status: 404 });
     }
 
+    const videoId = videoIdMatch[1];
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // 2. Tembak ke Cobalt API Instance (API Khusus Extractor Media Bebas Bot)
-    const cobaltRes = await axios.post(
-      'https://cobalt-api.kwiatek.xyz/', // Public Cobalt Instance
+    // 2. Gunakan Cookie yang sudah di-set di Vercel Environment Variables
+    const agent = ytdl.createAgent([
       {
-        url: videoUrl,
-        downloadMode: 'audio',
-        audioFormat: 'mp3',
+        name: 'cookie',
+        value: YOUTUBE_COOKIE,
       },
-      {
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        timeout: 8000,
-      }
-    );
+    ]);
 
-    if (cobaltRes.data?.url) {
-      return NextResponse.json({
-        success: true,
-        title: searchRes.data[0].title || query,
-        artist: searchRes.data[0].author || 'Unknown',
-        streamUrl: cobaltRes.data.url, // Full Audio MP3 Link!
-        thumbnail: searchRes.data[0].videoThumbnails?.[0]?.url || '',
-      });
+    const info = await ytdl.getInfo(videoUrl, { agent });
+    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+
+    if (!audioFormats || audioFormats.length === 0) {
+      return NextResponse.json({ error: 'Audio stream tidak ditemukan' }, { status: 404 });
     }
 
-    return NextResponse.json({ error: 'Gagal mendapatkan audio dari Cobalt' }, { status: 500 });
+    const bestAudio = audioFormats.reduce((prev, curr) =>
+      (curr.audioBitrate || 0) > (prev.audioBitrate || 0) ? curr : prev
+    );
+
+    return NextResponse.json({
+      success: true,
+      title: info.videoDetails.title,
+      artist: info.videoDetails.author.name,
+      streamUrl: bestAudio.url, // Full Song Direct URL!
+      thumbnail: info.videoDetails.thumbnails[0]?.url || '',
+    });
   } catch (error: any) {
-    console.error('Cobalt Extractor Error:', error?.response?.data || error?.message);
+    console.error('YTDL Cookie Error:', error);
     return NextResponse.json(
-      { error: 'Internal Extractor Error', details: error?.message },
+      { error: 'Gagal memproses audio stream', details: error?.message || String(error) },
       { status: 500 }
     );
   }
