@@ -9,46 +9,61 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  // Client ID publik Jamendo untuk demo/developer (gratis & resmi)
-  const JAMENDO_CLIENT_ID = '56d30c41';
-
   try {
-    // 1. Cari lagu di Jamendo via API Resmi
-    const response = await axios.get('https://api.jamendo.com/v3.0/tracks/', {
-      params: {
-        client_id: JAMENDO_CLIENT_ID,
-        format: 'json',
-        limit: 1,
-        search: query,
-        include: 'musicinfo',
+    // Tembak JioSaavn Primary API (Lagu Indo / Barat Komersial Super Lengkap)
+    const searchUrl = `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}`;
+
+    const response = await axios.get(searchUrl, {
+      timeout: 8000,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       },
-      timeout: 5000,
     });
 
-    const results = response.data?.results;
+    const results = response.data?.data?.results;
 
     if (!results || !Array.isArray(results) || results.length === 0) {
-      return NextResponse.json(
-        { error: 'Lagu tidak ditemukan di direktori Jamendo' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
     }
 
-    const track = results[0];
+    const song = results[0];
+
+    // Ambil Stream URL Kualitas Terbaik (320kbps MP3)
+    let streamUrl = '';
+    if (Array.isArray(song.downloadUrl) && song.downloadUrl.length > 0) {
+      streamUrl = song.downloadUrl[song.downloadUrl.length - 1]?.url || song.downloadUrl[0]?.url;
+    }
+
+    if (!streamUrl) {
+      return NextResponse.json({ error: 'Stream URL tidak tersedia' }, { status: 404 });
+    }
+
+    // Ambil Thumbnail Kualitas Tinggi
+    let thumbnail = '';
+    if (Array.isArray(song.image) && song.image.length > 0) {
+      thumbnail = song.image[song.image.length - 1]?.url || song.image[0]?.url;
+    }
+
+    // Ambil Nama Artis
+    let artistName = 'Official Artist';
+    if (song.artists?.primary && Array.isArray(song.artists.primary) && song.artists.primary.length > 0) {
+      artistName = song.artists.primary[0].name;
+    }
 
     return NextResponse.json({
       success: true,
-      title: track.name || query,
-      artist: track.artist_name || 'Official Artist',
-      album: track.album_name || '',
-      streamUrl: track.audio, // DIRECT MP3 STREAM LEGAL & STABIL DARI JAMENDO CDN!
-      thumbnail: track.image || track.album_image || '',
-      durationSeconds: Number(track.duration) || 0,
+      title: song.name || query,
+      artist: artistName,
+      album: song.album?.name || '',
+      streamUrl: streamUrl, // DIRECT 320KBPS FULL SONG MP3!
+      thumbnail: thumbnail,
+      durationSeconds: Number(song.duration) || 0,
     });
   } catch (error: any) {
-    console.error('Jamendo API Error:', error?.message || error);
+    console.error('Saavn Engine Error:', error?.message || error);
     return NextResponse.json(
-      { error: 'Gagal memproses stream dari Jamendo API', details: error?.message || String(error) },
+      { error: 'Gagal mendapatkan lagu mainstream', details: error?.message || String(error) },
       { status: 500 }
     );
   }
