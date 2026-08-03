@@ -98,26 +98,33 @@ export async function GET(request: Request) {
     );
   }
 
-  // 2. KUMPULKAN KANDIDAT STREAM URL (PIPED & INVIDIOUS)
+  // 2. KUMPULKAN DIRECT GOOGLE VIDEO CDN URLS (MURNI DARI PIPED API, TANPA INVIDIOUS!)
   const candidateUrls: string[] = [];
 
   const pipedStreamNodes = [
     'https://api.piped.privacydev.net',
     'https://pipedapi.kavin.rocks',
     'https://api.piped.projectsegfau.lt',
+    'https://piped-api.garudalinux.org',
+    'https://pipedapi.tokhmi.xyz',
   ];
 
   for (const node of pipedStreamNodes) {
     try {
-      const pipedRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 3500 });
+      const pipedRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 4000 });
       const audioStreams = pipedRes.data?.audioStreams;
       if (Array.isArray(audioStreams) && audioStreams.length > 0) {
+        // Pilih stream M4A AAC (itag 140) dari googlevideo.com
         const m4aStreams = audioStreams
           .filter((s: any) => s.mimeType?.includes('mp4') || s.format === 'M4A' || s.mimeType?.includes('audio'))
           .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
 
         for (const s of m4aStreams) {
-          if (s.url) candidateUrls.push(s.url);
+          if (s.url && s.url.includes('googlevideo.com')) {
+            candidateUrls.push(s.url);
+          } else if (s.url) {
+            candidateUrls.push(s.url);
+          }
         }
       }
     } catch (e) {
@@ -125,13 +132,7 @@ export async function GET(request: Request) {
     }
   }
 
-  candidateUrls.push(
-    `https://inv.tux.zone/latest_version?id=${videoId}&itag=140&local=true`,
-    `https://invidious.projectsegfau.lt/latest_version?id=${videoId}&itag=140&local=true`,
-    `https://invidious.perennialte.ch/latest_version?id=${videoId}&itag=140&local=true`
-  );
-
-  // 3. SATPAM ANTI-HTML (VERIFIKASI STREAM DI RAILWAY)
+  // 3. SATPAM ANTI-HTML: HANYA TERIMA HTTP 200/206 (TOLAK 302 REDIRECT & HTML!)
   let validStreamUrl = '';
 
   for (const url of candidateUrls) {
@@ -143,12 +144,12 @@ export async function GET(request: Request) {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         },
         timeout: 3000,
-        validateStatus: (status) => status === 200 || status === 206 || status === 302,
+        validateStatus: (status) => status === 200 || status === 206, // Haram hukumnya 302!
       });
 
       const contentType = String(testRes.headers['content-type'] || '').toLowerCase();
 
-      if (contentType.includes('text/html')) {
+      if (contentType.includes('text/html') || contentType.includes('application/json')) {
         continue;
       }
 
@@ -164,15 +165,14 @@ export async function GET(request: Request) {
   }
 
   // 4. BUNGKUS KE DALAM RAILWAY AUDIO TUNNEL (/api/proxy)
-  // ExoPlayer di Flutter HANYA akan mengunduh dari domain Railway kamu sendiri!
   const proxyStreamUrl = `https://arsify-backend-production.up.railway.app/api/proxy?url=${encodeURIComponent(validStreamUrl)}`;
 
   return NextResponse.json({
     success: true,
-    engine: 'Server-Side Railway Audio Tunnel (100% Anti-Cloudflare & Anti-HTML)',
+    engine: 'Server-Side Piped -> Direct Google CDN Tunnel (100% Pure M4A Audio)',
     title: title,
     artist: artist,
-    streamUrl: proxyStreamUrl, // <-- BUKAN LAGI LINK EKSTERNAL!
+    streamUrl: proxyStreamUrl,
     thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
     durationSeconds: durationSeconds,
   });

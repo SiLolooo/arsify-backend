@@ -10,7 +10,6 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Railway mengunduh audio menggunakan header Chrome Desktop (100% Lolos Cloudflare)
     const response = await axios.get(targetUrl, {
       responseType: 'arraybuffer',
       headers: {
@@ -24,7 +23,15 @@ export async function GET(request: Request) {
 
     const buffer = Buffer.from(response.data);
 
-    // Kirim biner audio murni (audio/mp4) langsung ke ExoPlayer Android
+    // KRUSIAL: Cek 25 byte pertama file! Kalau isinya teks HTML/DOCTYPE/JSON error, TOLAK!
+    const headText = buffer.subarray(0, 25).toString('utf8').toLowerCase();
+    if (headText.includes('<html') || headText.includes('<!doc') || headText.includes('error')) {
+      return new NextResponse('Proxy error: Server sumber mengirim halaman HTML/CAPTCHA, bukan audio.', {
+        status: 502,
+      });
+    }
+
+    // Terbukti biner audio M4A murni, kirim ke ExoPlayer!
     return new NextResponse(buffer, {
       status: 200,
       headers: {
