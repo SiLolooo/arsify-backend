@@ -9,83 +9,76 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  try {
-    // 1. Ekstraksi Audio Stream via Y2Mate / Invidious API Public Direct Fast Engine
-    const searchQuery = `${query} official audio`;
-    
-    // Gunakan Invidious API Mirror yang sangat cepat & stabil
-    const invidiousMirrors = [
-      'https://invidious.flokinet.to',
-      'https://invidious.projectsegfau.lt',
-      'https://vid.puffyan.us',
-      'https://invidious.privacydev.net'
-    ];
+  const searchQuery = `${query} official audio`;
 
-    let videoId = '';
-    let title = query;
-    let artist = 'Official Track';
+  // Daftar provider estafet (semua menyajikan FULL SONG)
+  const providers = [
+    // 1. Invidious Node 1
+    async () => {
+      const search = await axios.get(`https://invidious.privacydev.net/api/v1/search?q=${encodeURIComponent(searchQuery)}&type=video`, { timeout: 2500 });
+      const videoId = search.data?.[0]?.videoId;
+      if (!videoId) return null;
+      const detail = await axios.get(`https://invidious.privacydev.net/api/v1/videos/${videoId}`, { timeout: 2500 });
+      const audio = detail.data?.adaptiveFormats?.filter((f: any) => f.type?.includes('audio')).pop();
+      return audio ? { url: audio.url, title: detail.data.title, artist: detail.data.author, duration: detail.data.lengthSeconds } : null;
+    },
+    // 2. Invidious Node 2
+    async () => {
+      const search = await axios.get(`https://inv.tux.pizza/api/v1/search?q=${encodeURIComponent(searchQuery)}&type=video`, { timeout: 2500 });
+      const videoId = search.data?.[0]?.videoId;
+      if (!videoId) return null;
+      const detail = await axios.get(`https://inv.tux.pizza/api/v1/videos/${videoId}`, { timeout: 2500 });
+      const audio = detail.data?.adaptiveFormats?.filter((f: any) => f.type?.includes('audio')).pop();
+      return audio ? { url: audio.url, title: detail.data.title, artist: detail.data.author, duration: detail.data.lengthSeconds } : null;
+    },
+    // 3. Piped Engine
+    async () => {
+      const search = await axios.get(`https://api.piped.private.coffee/search?q=${encodeURIComponent(searchQuery)}&filter=music_songs`, { timeout: 2500 });
+      const item = search.data?.items?.[0];
+      const videoId = item?.url?.replace('/watch?v=', '');
+      if (!videoId) return null;
+      const stream = await axios.get(`https://api.piped.private.coffee/streams/${videoId}`, { timeout: 2500 });
+      const audio = stream.data?.audioStreams?.pop();
+      return audio ? { url: audio.url, title: item.title, artist: item.uploaderName, duration: stream.data.duration } : null;
+    },
+    // 4. Cobalt Fast MP3 Extractor
+    async () => {
+      const search = await axios.get(`https://pub-api.piped.video/search?q=${encodeURIComponent(searchQuery)}&filter=music_songs`, { timeout: 2500 });
+      const item = search.data?.items?.[0];
+      const videoId = item?.url?.replace('/watch?v=', '');
+      if (!videoId) return null;
+      
+      const cobalt = await axios.post('https://api.cobalt.tools/', {
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        downloadMode: 'audio',
+        audioFormat: 'mp3'
+      }, { headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, timeout: 3500 });
+      
+      return cobalt.data?.url ? { url: cobalt.data.url, title: item.title, artist: item.uploaderName, duration: 240 } : null;
+    }
+  ];
 
-    for (const mirror of invidiousMirrors) {
-      try {
-        const searchRes = await axios.get(
-          `${mirror}/api/v1/search?q=${encodeURIComponent(searchQuery)}&type=video`,
-          { timeout: 3500 }
-        );
-
-        if (searchRes.data && searchRes.data.length > 0) {
-          const video = searchRes.data[0];
-          videoId = video.videoId;
-          title = video.title;
-          artist = video.author;
-          
-          // Dapatkan direct format audio
-          const videoDetail = await axios.get(`${mirror}/api/v1/videos/${videoId}`, { timeout: 3500 });
-          const audioFormats = videoDetail.data?.adaptiveFormats?.filter((f: any) => f.type?.includes('audio'));
-          
-          if (audioFormats && audioFormats.length > 0) {
-            const bestAudio = audioFormats[audioFormats.length - 1];
-            return NextResponse.json({
-              success: true,
-              title: title,
-              artist: artist,
-              streamUrl: bestAudio.url, // Direct Audio Stream
-              thumbnail: video.videoThumbnails?.[0]?.url || '',
-              durationSeconds: video.lengthSeconds || 0
-            });
-          }
-        }
-      } catch (err) {
-        continue; // Lanjut ke mirror berikutnya jika yang ini sibuk
+  // Eksekusi estafet (fallback otomatis)
+  for (const fetchStream of providers) {
+    try {
+      const result = await fetchStream();
+      if (result && result.url) {
+        return NextResponse.json({
+          success: true,
+          title: result.title || query,
+          artist: result.artist || 'Official Track',
+          streamUrl: result.url, // DIRECT FULL SONG STREAM!
+          durationSeconds: result.duration || 0,
+        });
       }
+    } catch (e) {
+      // Jika provider ini gagal/timeout, diam-diam lanjut ke provider berikutnya
+      continue;
     }
-
-    // 2. Fallback jika seluruh Invidious Mirror sibuk: Gunakan Deezer Official High Quality Direct Stream
-    const deezerRes = await axios.get(
-      `https://api.deezer.com/search?q=${encodeURIComponent(query)}&limit=1`,
-      { timeout: 4000 }
-    );
-
-    const track = deezerRes.data?.data?.[0];
-    if (track && track.preview) {
-      return NextResponse.json({
-        success: true,
-        title: track.title || query,
-        artist: track.artist?.name || 'Official Artist',
-        streamUrl: track.preview, // Direct Clean Audio Stream
-        thumbnail: track.album?.cover_xl || track.album?.cover_medium || '',
-        durationSeconds: track.duration || 30
-      });
-    }
-
-    return NextResponse.json(
-      { error: 'Lagu tidak ditemukan dari provider manapun' },
-      { status: 404 }
-    );
-  } catch (error: any) {
-    console.error('Stream Route Critical Error:', error?.message);
-    return NextResponse.json(
-      { error: 'Internal Server Error', details: error?.message },
-      { status: 500 }
-    );
   }
+
+  return NextResponse.json(
+    { error: 'Gagal mengekstrak audio dari semua provider backend' },
+    { status: 502 }
+  );
 }
