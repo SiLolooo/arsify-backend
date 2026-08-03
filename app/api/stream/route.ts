@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import ytdl from '@distube/ytdl-core';
+import axios from 'axios';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -9,58 +9,68 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  const YOUTUBE_COOKIE = process.env.YOUTUBE_COOKIE || '';
-
   try {
-    // 1. Search video via YouTube Scraping
-    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
-    const searchRes = await fetch(searchUrl, {
+    // 1. Cari track di SoundCloud via Public Search Engine
+    const scSearchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(
+      query
+    )}&client_id=iZ864q28A9S2m5583802380238023&limit=3`;
+
+    const searchRes = await axios.get(scSearchUrl, {
+      timeout: 6000,
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       },
     });
 
-    const html = await searchRes.text();
-    const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+    const collection = searchRes.data?.collection;
 
-    if (!videoIdMatch || !videoIdMatch[1]) {
-      return NextResponse.json({ error: 'Video tidak ditemukan' }, { status: 404 });
+    if (!collection || collection.length === 0) {
+      return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
     }
 
-    const videoId = videoIdMatch[1];
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    // Ambil hasil pencarian pertama
+    const track = collection[0];
+    const transcodings = track?.media?.transcodings;
 
-    // 2. Gunakan Cookie yang sudah di-set di Vercel Environment Variables
-    const agent = ytdl.createAgent([
-      {
-        name: 'cookie',
-        value: YOUTUBE_COOKIE,
-      },
-    ]);
-
-    const info = await ytdl.getInfo(videoUrl, { agent });
-    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
-
-    if (!audioFormats || audioFormats.length === 0) {
-      return NextResponse.json({ error: 'Audio stream tidak ditemukan' }, { status: 404 });
+    if (!transcodings || !Array.isArray(transcodings)) {
+      return NextResponse.json({ error: 'Format audio tidak tersedia' }, { status: 404 });
     }
 
-    const bestAudio = audioFormats.reduce((prev, curr) =>
-      (curr.audioBitrate || 0) > (prev.audioBitrate || 0) ? curr : prev
+    // 2. Cari stream format progressive (Direct MP3 Stream)
+    let targetFormat = transcodings.find(
+      (t: any) => t.format?.protocol === 'progressive'
     );
 
-    return NextResponse.json({
-      success: true,
-      title: info.videoDetails.title,
-      artist: info.videoDetails.author.name,
-      streamUrl: bestAudio.url, // Full Song Direct URL!
-      thumbnail: info.videoDetails.thumbnails[0]?.url || '',
-    });
+    // Fallback jika progressive tidak ada
+    if (!targetFormat && transcodings.length > 0) {
+      targetFormat = transcodings[0];
+    }
+
+    if (targetFormat) {
+      // 3. Dapatkan Direct Stream URL dari SoundCloud
+      const streamLinkRes = await axios.get(
+        `${targetFormat.url}?client_id=iZ864q28A9S2m5583802380238023`,
+        { timeout: 6000 }
+      );
+
+      if (streamLinkRes.data?.url) {
+        return NextResponse.json({
+          success: true,
+          title: track.title || query,
+          artist: track.user?.username || 'Unknown Artist',
+          streamUrl: streamLinkRes.data.url, // DIRECT FULL SONG MP3!
+          thumbnail: track.artwork_url ? track.artwork_url.replace('-large', '-t500x500') : '',
+          durationSeconds: Math.floor((track.duration || 0) / 1000),
+        });
+      }
+    }
+
+    return NextResponse.json({ error: 'Gagal mengekstrak stream URL' }, { status: 500 });
   } catch (error: any) {
-    console.error('YTDL Cookie Error:', error);
+    console.error('SoundCloud Search Error:', error?.message || error);
     return NextResponse.json(
-      { error: 'Gagal memproses audio stream', details: error?.message || String(error) },
+      { error: 'Internal Stream Error', details: error?.message || String(error) },
       { status: 500 }
     );
   }
