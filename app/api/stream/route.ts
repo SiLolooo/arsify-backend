@@ -9,76 +9,67 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  const searchQuery = `${query} official audio`;
+  try {
+    // Cari track di SoundCloud via Public Search Engine (Official Track Priority)
+    const scSearchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(
+      query
+    )}&client_id=iZ864q28A9S2m5583802380238023&limit=5`;
 
-  // Daftar provider estafet (semua menyajikan FULL SONG)
-  const providers = [
-    // 1. Invidious Node 1
-    async () => {
-      const search = await axios.get(`https://invidious.privacydev.net/api/v1/search?q=${encodeURIComponent(searchQuery)}&type=video`, { timeout: 2500 });
-      const videoId = search.data?.[0]?.videoId;
-      if (!videoId) return null;
-      const detail = await axios.get(`https://invidious.privacydev.net/api/v1/videos/${videoId}`, { timeout: 2500 });
-      const audio = detail.data?.adaptiveFormats?.filter((f: any) => f.type?.includes('audio')).pop();
-      return audio ? { url: audio.url, title: detail.data.title, artist: detail.data.author, duration: detail.data.lengthSeconds } : null;
-    },
-    // 2. Invidious Node 2
-    async () => {
-      const search = await axios.get(`https://inv.tux.pizza/api/v1/search?q=${encodeURIComponent(searchQuery)}&type=video`, { timeout: 2500 });
-      const videoId = search.data?.[0]?.videoId;
-      if (!videoId) return null;
-      const detail = await axios.get(`https://inv.tux.pizza/api/v1/videos/${videoId}`, { timeout: 2500 });
-      const audio = detail.data?.adaptiveFormats?.filter((f: any) => f.type?.includes('audio')).pop();
-      return audio ? { url: audio.url, title: detail.data.title, artist: detail.data.author, duration: detail.data.lengthSeconds } : null;
-    },
-    // 3. Piped Engine
-    async () => {
-      const search = await axios.get(`https://api.piped.private.coffee/search?q=${encodeURIComponent(searchQuery)}&filter=music_songs`, { timeout: 2500 });
-      const item = search.data?.items?.[0];
-      const videoId = item?.url?.replace('/watch?v=', '');
-      if (!videoId) return null;
-      const stream = await axios.get(`https://api.piped.private.coffee/streams/${videoId}`, { timeout: 2500 });
-      const audio = stream.data?.audioStreams?.pop();
-      return audio ? { url: audio.url, title: item.title, artist: item.uploaderName, duration: stream.data.duration } : null;
-    },
-    // 4. Cobalt Fast MP3 Extractor
-    async () => {
-      const search = await axios.get(`https://pub-api.piped.video/search?q=${encodeURIComponent(searchQuery)}&filter=music_songs`, { timeout: 2500 });
-      const item = search.data?.items?.[0];
-      const videoId = item?.url?.replace('/watch?v=', '');
-      if (!videoId) return null;
-      
-      const cobalt = await axios.post('https://api.cobalt.tools/', {
-        url: `https://www.youtube.com/watch?v=${videoId}`,
-        downloadMode: 'audio',
-        audioFormat: 'mp3'
-      }, { headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, timeout: 3500 });
-      
-      return cobalt.data?.url ? { url: cobalt.data.url, title: item.title, artist: item.uploaderName, duration: 240 } : null;
+    const searchRes = await axios.get(scSearchUrl, {
+      timeout: 5000,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+
+    const collection = searchRes.data?.collection;
+
+    if (!collection || collection.length === 0) {
+      return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
     }
-  ];
 
-  // Eksekusi estafet (fallback otomatis)
-  for (const fetchStream of providers) {
-    try {
-      const result = await fetchStream();
-      if (result && result.url) {
+    // Filter track yang valid
+    const track = collection[0];
+    const transcodings = track?.media?.transcodings;
+
+    if (!transcodings || !Array.isArray(transcodings)) {
+      return NextResponse.json({ error: 'Format audio tidak tersedia' }, { status: 404 });
+    }
+
+    // Ambil format progressive (Direct Audio Stream)
+    let targetFormat = transcodings.find(
+      (t: any) => t.format?.protocol === 'progressive'
+    );
+
+    if (!targetFormat && transcodings.length > 0) {
+      targetFormat = transcodings[0];
+    }
+
+    if (targetFormat) {
+      const streamLinkRes = await axios.get(
+        `${targetFormat.url}?client_id=iZ864q28A9S2m5583802380238023`,
+        { timeout: 5000 }
+      );
+
+      if (streamLinkRes.data?.url) {
         return NextResponse.json({
           success: true,
-          title: result.title || query,
-          artist: result.artist || 'Official Track',
-          streamUrl: result.url, // DIRECT FULL SONG STREAM!
-          durationSeconds: result.duration || 0,
+          title: track.title || query,
+          artist: track.user?.username || 'Official Artist',
+          streamUrl: streamLinkRes.data.url, // DIRECT FULL SONG MP3!
+          thumbnail: track.artwork_url ? track.artwork_url.replace('-large', '-t500x500') : '',
+          durationSeconds: Math.floor((track.duration || 0) / 1000),
         });
       }
-    } catch (e) {
-      // Jika provider ini gagal/timeout, diam-diam lanjut ke provider berikutnya
-      continue;
     }
-  }
 
-  return NextResponse.json(
-    { error: 'Gagal mengekstrak audio dari semua provider backend' },
-    { status: 502 }
-  );
+    return NextResponse.json({ error: 'Gagal mengekstrak stream URL' }, { status: 500 });
+  } catch (error: any) {
+    console.error('SoundCloud Stream Error:', error?.message || error);
+    return NextResponse.json(
+      { error: 'Internal Stream Error', details: error?.message || String(error) },
+      { status: 500 }
+    );
+  }
 }
