@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import axios from 'axios';
+import ytdl from '@distube/ytdl-core';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -9,81 +9,52 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  // 1. Coba via Invidious Instances API (Scraper Youtube High-Reliability)
-  const invidiousInstances = [
-    'https://inv.hostux.net',
-    'https://invidious.nerdvpn.de',
-    'https://invidious.drgns.space',
-    'https://vid.puffyan.us',
-  ];
-
-  for (const instance of invidiousInstances) {
-    try {
-      const searchRes = await axios.get(
-        `${instance}/api/v1/search?q=${encodeURIComponent(query)}&type=video`,
-        { timeout: 4000 }
-      );
-
-      if (searchRes.data && Array.isArray(searchRes.data) && searchRes.data.length > 0) {
-        const video = searchRes.data[0];
-        const videoId = video.videoId;
-
-        if (videoId) {
-          const detailRes = await axios.get(`${instance}/api/v1/videos/${videoId}`, {
-            timeout: 4000,
-          });
-
-          const adaptiveFormats = detailRes.data?.adaptiveFormats;
-          if (Array.isArray(adaptiveFormats)) {
-            // Cari format audio (mimeType audio/webm atau audio/mp4)
-            const audioFormats = adaptiveFormats.filter((f: any) =>
-              f.type?.includes('audio')
-            );
-
-            if (audioFormats.length > 0) {
-              const bestAudio = audioFormats[audioFormats.length - 1];
-              return NextResponse.json({
-                success: true,
-                title: video.title || query,
-                artist: video.author || 'Unknown Artist',
-                streamUrl: bestAudio.url,
-                thumbnail: video.videoThumbnails?.[0]?.url || '',
-              });
-            }
-          }
-        }
-      }
-    } catch (e: any) {
-      console.warn(`Invidious ${instance} error:`, e?.message);
-      continue;
-    }
-  }
-
-  // 2. Fallback Paling Aman: iTunes Search API (Official Preview Audio Stream)
   try {
-    const itunesRes = await axios.get(
-      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=1`,
-      { timeout: 5000 }
+    // 1. Cari video via YouTube API Search Scraper ringan
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    const searchRes = await fetch(searchUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+
+    const html = await searchRes.text();
+    const videoIdMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+
+    if (!videoIdMatch || !videoIdMatch[1]) {
+      return NextResponse.json({ error: 'Video YouTube tidak ditemukan' }, { status: 404 });
+    }
+
+    const videoId = videoIdMatch[1];
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+    // 2. Extract Direct Stream URL Durasi Penuh memakai ytdl-core
+    const info = await ytdl.getInfo(videoUrl);
+    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+
+    if (!audioFormats || audioFormats.length === 0) {
+      return NextResponse.json({ error: 'Audio stream tidak ditemukan' }, { status: 404 });
+    }
+
+    // Ambil format audio dengan audioBitrate tertinggi
+    const bestAudio = audioFormats.reduce((prev, curr) =>
+      (curr.audioBitrate || 0) > (prev.audioBitrate || 0) ? curr : prev
     );
 
-    if (itunesRes.data?.results?.length > 0) {
-      const track = itunesRes.data.results[0];
-      if (track.previewUrl) {
-        return NextResponse.json({
-          success: true,
-          title: track.trackName,
-          artist: track.artistName,
-          streamUrl: track.previewUrl,
-          thumbnail: track.artworkUrl100?.replace('100x100bb', '600x600bb') || '',
-        });
-      }
-    }
-  } catch (e: any) {
-    console.error('iTunes Fallback error:', e?.message);
+    return NextResponse.json({
+      success: true,
+      title: info.videoDetails.title,
+      artist: info.videoDetails.author.name,
+      streamUrl: bestAudio.url, // Direct Stream Full Song!
+      thumbnail: info.videoDetails.thumbnails[0]?.url || '',
+      durationSeconds: info.videoDetails.lengthSeconds,
+    });
+  } catch (error: any) {
+    console.error('YTDL Error:', error);
+    return NextResponse.json(
+      { error: 'Gagal memproses full audio stream', details: error?.message || String(error) },
+      { status: 500 }
+    );
   }
-
-  return NextResponse.json(
-    { error: 'Gagal mengekstrak audio dari seluruh provider' },
-    { status: 502 }
-  );
 }
