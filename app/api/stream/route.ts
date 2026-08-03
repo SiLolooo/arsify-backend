@@ -9,54 +9,107 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
+  const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+
   try {
-    // 1. Cari lagu di Saavn Open API Engine (Bebas Bot Check & 100% Full Duration MP3)
-    const searchUrl = `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}`;
+    let videoId = '';
+    let title = query;
+    let artist = 'Official Artist';
+    let thumbnail = '';
 
-    const response = await axios.get(searchUrl, {
-      timeout: 6000,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-    });
+    // 1. Dapatkan Video ID dari YouTube API Resmi (Pasti Akurat & Bebas Block)
+    if (YOUTUBE_API_KEY) {
+      try {
+        const ytRes = await axios.get(
+          `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(
+            query + ' official audio'
+          )}&type=video&key=${YOUTUBE_API_KEY}&maxResults=1`,
+          { timeout: 4000 }
+        );
+        const item = ytRes.data?.items?.[0];
+        if (item) {
+          videoId = item.id?.videoId;
+          title = item.snippet?.title || query;
+          artist = item.snippet?.channelTitle || 'Official Artist';
+          thumbnail = item.snippet?.thumbnails?.high?.url || '';
+        }
+      } catch (err) {
+        console.warn('YouTube API Search Fallback');
+      }
+    }
 
-    const results = response.data?.data?.results;
+    // Daftar Instance Invidious Active/Online
+    const invidiousNodes = [
+      'https://inv.tux.pizza',
+      'https://invidious.drgns.space',
+      'https://invidious.nerdvpn.de',
+      'https://invidious.projectsegfau.lt'
+    ];
 
-    if (!results || !Array.isArray(results) || results.length === 0) {
+    // Fallback jika API Key YouTube tidak mengembalikan videoId
+    if (!videoId) {
+      for (const node of invidiousNodes) {
+        try {
+          const searchRes = await axios.get(
+            `${node}/api/v1/search?q=${encodeURIComponent(query + ' official audio')}&type=video`,
+            { timeout: 3000 }
+          );
+          if (searchRes.data && searchRes.data.length > 0) {
+            videoId = searchRes.data[0].videoId;
+            title = searchRes.data[0].title;
+            artist = searchRes.data[0].author;
+            thumbnail = searchRes.data[0].videoThumbnails?.[0]?.url || '';
+            break;
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+    }
+
+    if (!videoId) {
       return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
     }
 
-    // Ambil hasil pencarian paling relevan (pertama)
-    const song = results[0];
+    // 2. Extractor Direct Stream MP3 Audio Durasi Penuh (Estafet Search)
+    for (const node of invidiousNodes) {
+      try {
+        const detailRes = await axios.get(`${node}/api/v1/videos/${videoId}`, {
+          timeout: 4000,
+        });
 
-    // Pick stream URL kualitas terbaik (320kbps -> 160kbps -> fallback)
-    const downloadUrlObj = song.downloadUrl;
-    let finalStreamUrl = '';
+        const adaptiveFormats = detailRes.data?.adaptiveFormats;
+        if (Array.isArray(adaptiveFormats)) {
+          const audioFormats = adaptiveFormats.filter((f: any) =>
+            f.type?.includes('audio')
+          );
 
-    if (Array.isArray(downloadUrlObj) && downloadUrlObj.length > 0) {
-      // Ambil bitrate tertinggi yang tersedia (biasanya elemen terakhir)
-      finalStreamUrl = downloadUrlObj[downloadUrlObj.length - 1]?.url || downloadUrlObj[0]?.url;
+          if (audioFormats.length > 0) {
+            const bestAudio = audioFormats[audioFormats.length - 1];
+
+            return NextResponse.json({
+              success: true,
+              title: title,
+              artist: artist,
+              streamUrl: bestAudio.url, // DIRECT FULL SONG MP3 STREAM!
+              thumbnail: thumbnail,
+              durationSeconds: detailRes.data?.lengthSeconds || 0,
+            });
+          }
+        }
+      } catch (err) {
+        continue; // Lanjut ke node berikutnya jika yang ini rtp/busy
+      }
     }
 
-    if (!finalStreamUrl) {
-      return NextResponse.json({ error: 'Stream URL tidak tersedia' }, { status: 404 });
-    }
-
-    // Direct Response dengan Metadata Lengkap & Full Duration Direct Stream!
-    return NextResponse.json({
-      success: true,
-      title: song.name || query,
-      artist: song.artists?.primary?.[0]?.name || 'Official Artist',
-      album: song.album?.name || '',
-      streamUrl: finalStreamUrl, // DIRECT HIGH QUALITY FULL MP3!
-      thumbnail: song.image?.[song.image.length - 1]?.url || '',
-      durationSeconds: Number(song.duration) || 0,
-    });
-  } catch (error: any) {
-    console.error('Saavn Stream Error:', error?.message || error);
     return NextResponse.json(
-      { error: 'Gagal memproses stream audio', details: error?.message || String(error) },
+      { error: 'Gagal mengekstrak audio stream' },
+      { status: 502 }
+    );
+  } catch (error: any) {
+    console.error('Stream Route Error:', error?.message);
+    return NextResponse.json(
+      { error: 'Internal Stream Error', details: error?.message },
       { status: 500 }
     );
   }
