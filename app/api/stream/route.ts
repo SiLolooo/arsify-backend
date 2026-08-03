@@ -9,85 +9,46 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  const searchQuery = `${query} official audio`;
+  // Client ID publik Jamendo untuk demo/developer (gratis & resmi)
+  const JAMENDO_CLIENT_ID = '56d30c41';
 
   try {
-    let videoId = '';
-    let title = query;
-    let artist = 'Official Artist';
-
-    // 1. Cari Video ID dari YouTube Search Scraper
-    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
-    const searchRes = await axios.get(searchUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    // 1. Cari lagu di Jamendo via API Resmi
+    const response = await axios.get('https://api.jamendo.com/v3.0/tracks/', {
+      params: {
+        client_id: JAMENDO_CLIENT_ID,
+        format: 'json',
+        limit: 1,
+        search: query,
+        include: 'musicinfo',
       },
       timeout: 5000,
     });
 
-    const matches = searchRes.data.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-    if (matches && matches[1]) {
-      videoId = matches[1];
+    const results = response.data?.results;
+
+    if (!results || !Array.isArray(results) || results.length === 0) {
+      return NextResponse.json(
+        { error: 'Lagu tidak ditemukan di direktori Jamendo' },
+        { status: 404 }
+      );
     }
 
-    if (!videoId) {
-      return NextResponse.json({ error: 'Lagu tidak ditemukan' }, { status: 404 });
-    }
+    const track = results[0];
 
-    // List Public Cobalt API Instances (Proxy Extractor yang mengurusi Bypass Captcha & Bot Guard)
-    const cobaltInstances = [
-      'https://api.cobalt.tools/',
-      'https://cobalt-api.kwi.im/',
-      'https://co.wuk.sh/api/json'
-    ];
-
-    const targetYoutubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-    // 2. Tembak ke Cobalt Engine untuk mengambil Direct Audio Link (Bebas Captcha/Bot Check)
-    for (const cobaltUrl of cobaltInstances) {
-      try {
-        const cobaltRes = await axios.post(
-          cobaltUrl,
-          {
-            url: targetYoutubeUrl,
-            downloadMode: 'audio',
-            audioFormat: 'mp3',
-            audioBitrate: '320',
-          },
-          {
-            headers: {
-              Accept: 'application/json',
-              'Content-Type': 'application/json',
-            },
-            timeout: 7000,
-          }
-        );
-
-        if (cobaltRes.data?.url) {
-          return NextResponse.json({
-            success: true,
-            title: title,
-            artist: artist,
-            streamUrl: cobaltRes.data.url, // DIRECT AUDIO MP3 STREAM DARI COBALT ENGINE!
-            thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-            durationSeconds: 240,
-          });
-        }
-      } catch (err: any) {
-        console.warn(`Cobalt instance ${cobaltUrl} failed, trying next...`);
-        continue;
-      }
-    }
-
-    return NextResponse.json(
-      { error: 'Gagal mengekstrak audio dari Cobalt Proxy Engine' },
-      { status: 502 }
-    );
+    return NextResponse.json({
+      success: true,
+      title: track.name || query,
+      artist: track.artist_name || 'Official Artist',
+      album: track.album_name || '',
+      streamUrl: track.audio, // DIRECT MP3 STREAM LEGAL & STABIL DARI JAMENDO CDN!
+      thumbnail: track.image || track.album_image || '',
+      durationSeconds: Number(track.duration) || 0,
+    });
   } catch (error: any) {
-    console.error('Proxy Stream Error:', error?.message || error);
+    console.error('Jamendo API Error:', error?.message || error);
     return NextResponse.json(
-      { error: 'Internal Stream Error', details: error?.message || String(error) },
+      { error: 'Gagal memproses stream dari Jamendo API', details: error?.message || String(error) },
       { status: 500 }
     );
   }
