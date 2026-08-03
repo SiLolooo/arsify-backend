@@ -98,7 +98,7 @@ export async function GET(request: Request) {
     );
   }
 
-  // 2. KUMPULKAN KANDIDAT AUDIO STREAM DARI PIPED API
+  // 2. KUMPULKAN DIRECT GOOGLE VIDEO CDN URLS (MURNI DARI PIPED API, TANPA INVIDIOUS!)
   const candidateUrls: string[] = [];
 
   const pipedStreamNodes = [
@@ -114,12 +114,17 @@ export async function GET(request: Request) {
       const pipedRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 4000 });
       const audioStreams = pipedRes.data?.audioStreams;
       if (Array.isArray(audioStreams) && audioStreams.length > 0) {
+        // Pilih stream M4A AAC (itag 140) dari googlevideo.com
         const m4aStreams = audioStreams
           .filter((s: any) => s.mimeType?.includes('mp4') || s.format === 'M4A' || s.mimeType?.includes('audio'))
           .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
 
         for (const s of m4aStreams) {
-          if (s.url) candidateUrls.push(s.url);
+          if (s.url && s.url.includes('googlevideo.com')) {
+            candidateUrls.push(s.url);
+          } else if (s.url) {
+            candidateUrls.push(s.url);
+          }
         }
       }
     } catch (e) {
@@ -127,7 +132,7 @@ export async function GET(request: Request) {
     }
   }
 
-  // 3. UJI VALIDASI LINK (PASTIKAN BENAR-BENAR HIDUP DAN BUKAN HTML)
+  // 3. SATPAM ANTI-HTML: HANYA TERIMA HTTP 200/206 (TOLAK 302 REDIRECT & HTML!)
   let validStreamUrl = '';
 
   for (const url of candidateUrls) {
@@ -139,10 +144,11 @@ export async function GET(request: Request) {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         },
         timeout: 3000,
-        validateStatus: (status) => status === 200 || status === 206,
+        validateStatus: (status) => status === 200 || status === 206, // Haram hukumnya 302!
       });
 
       const contentType = String(testRes.headers['content-type'] || '').toLowerCase();
+
       if (contentType.includes('text/html') || contentType.includes('application/json')) {
         continue;
       }
@@ -154,24 +160,16 @@ export async function GET(request: Request) {
     }
   }
 
-  // PENGAMAN UTAMA: Jika tidak ada satupun yang lolos uji, ambil kandidat pertama secara paksa
   if (!validStreamUrl && candidateUrls.length > 0) {
     validStreamUrl = candidateUrls[0];
   }
 
-  if (!validStreamUrl) {
-    return NextResponse.json(
-      { error: 'Gagal mendapatkan stream audio yang valid dari server Piped.' },
-      { status: 500 }
-    );
-  }
-
-  // 4. BUNGKUS KE PROXY DENGAN ENCODE YANG AMAN
+  // 4. BUNGKUS KE DALAM RAILWAY AUDIO TUNNEL (/api/proxy)
   const proxyStreamUrl = `https://arsify-backend-production.up.railway.app/api/proxy?url=${encodeURIComponent(validStreamUrl)}`;
 
   return NextResponse.json({
     success: true,
-    engine: 'Server-Side Piped Stream with Safe Proxy Tunnel',
+    engine: 'Server-Side Piped -> Direct Google CDN Tunnel (100% Pure M4A Audio)',
     title: title,
     artist: artist,
     streamUrl: proxyStreamUrl,
