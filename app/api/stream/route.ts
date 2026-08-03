@@ -16,13 +16,12 @@ export async function GET(request: Request) {
   let artist = 'Official Artist';
   let durationSeconds = 240;
 
-  // =========================================================================
-  // 1. PENCARIAN VIDEO ID (3 LAPIS CADANGAN - TERBUKTI SUKSES)
-  // =========================================================================
+  // 1. CARI VIDEO ID RESMI (3 LAPIS CADANGAN)
   const invidiousSearchNodes = [
-    'https://inv.nadeko.net/api/v1/search',
-    'https://invidious.projectsegfau.lt/api/v1/search',
-    'https://invidious.perennialte.ch/api/v1/search',
+    'https://inv.tux.zone/api/v1/search',
+    'https://invidious.nerdvpn.de/api/v1/search',
+    'https://inv.nocomment.life/api/v1/search',
+    'https://invidious.drgns.space/api/v1/search',
   ];
 
   for (const node of invidiousSearchNodes) {
@@ -44,7 +43,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // Lapis 2: Piped API Search
   if (!videoId) {
     const pipedSearchNodes = [
       'https://api.piped.privacydev.net/search',
@@ -70,7 +68,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // Lapis 3: Direct YouTube HTML Regex (Selalu berhasil dapat ID Tulus)
   if (!videoId) {
     try {
       const ytRes = await axios.get(
@@ -101,21 +98,18 @@ export async function GET(request: Request) {
     );
   }
 
-  // =========================================================================
-  // 2. KANDIDAT STREAM URL (HANYA DOMAIN YANG LOLOS DNS/ISP INDONESIA)
-  // =========================================================================
+  // 2. KUMPULKAN KANDIDAT STREAM URL (PIPED & INVIDIOUS)
   const candidateUrls: string[] = [];
 
-  // Prioritas 1: Piped CDN (.rocks / .net / .lt - Bebas blokir DNS Indonesia)
   const pipedStreamNodes = [
-    'https://pipedapi.kavin.rocks',
     'https://api.piped.privacydev.net',
+    'https://pipedapi.kavin.rocks',
     'https://api.piped.projectsegfau.lt',
   ];
 
   for (const node of pipedStreamNodes) {
     try {
-      const pipedRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 4000 });
+      const pipedRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 3500 });
       const audioStreams = pipedRes.data?.audioStreams;
       if (Array.isArray(audioStreams) && audioStreams.length > 0) {
         const m4aStreams = audioStreams
@@ -131,16 +125,13 @@ export async function GET(request: Request) {
     }
   }
 
-  // Prioritas 2: Invidious Proxy (.net / .lt / .ch - Lolos ISP Indonesia)
   candidateUrls.push(
-    `https://inv.nadeko.net/latest_version?id=${videoId}&itag=140&local=true`,
+    `https://inv.tux.zone/latest_version?id=${videoId}&itag=140&local=true`,
     `https://invidious.projectsegfau.lt/latest_version?id=${videoId}&itag=140&local=true`,
     `https://invidious.perennialte.ch/latest_version?id=${videoId}&itag=140&local=true`
   );
 
-  // =========================================================================
-  // 3. SATPAM ANTI-HTML & VERIFIKASI STREAM
-  // =========================================================================
+  // 3. SATPAM ANTI-HTML (VERIFIKASI STREAM DI RAILWAY)
   let validStreamUrl = '';
 
   for (const url of candidateUrls) {
@@ -151,13 +142,12 @@ export async function GET(request: Request) {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         },
-        timeout: 3500,
+        timeout: 3000,
         validateStatus: (status) => status === 200 || status === 206 || status === 302,
       });
 
       const contentType = String(testRes.headers['content-type'] || '').toLowerCase();
 
-      // Tolak teks HTML (error page)
       if (contentType.includes('text/html')) {
         continue;
       }
@@ -173,12 +163,16 @@ export async function GET(request: Request) {
     validStreamUrl = candidateUrls[0];
   }
 
+  // 4. BUNGKUS KE DALAM RAILWAY AUDIO TUNNEL (/api/proxy)
+  // ExoPlayer di Flutter HANYA akan mengunduh dari domain Railway kamu sendiri!
+  const proxyStreamUrl = `https://arsify-backend-production.up.railway.app/api/proxy?url=${encodeURIComponent(validStreamUrl)}`;
+
   return NextResponse.json({
     success: true,
-    engine: 'Server-Side Audio Proxy (Indonesian DNS Safe)',
+    engine: 'Server-Side Railway Audio Tunnel (100% Anti-Cloudflare & Anti-HTML)',
     title: title,
     artist: artist,
-    streamUrl: validStreamUrl,
+    streamUrl: proxyStreamUrl, // <-- BUKAN LAGI LINK EKSTERNAL!
     thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
     durationSeconds: durationSeconds,
   });
