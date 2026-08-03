@@ -1,29 +1,5 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
-import crypto from 'crypto';
-import ytdl from '@distube/ytdl-core';
-
-// ============================================================================
-// HELPER: Native DES-ECB Decryption untuk Official CDN JioSaavn (Zero Mirror)
-// ============================================================================
-function decryptJioSaavnUrl(encryptedMediaUrl: string): string | null {
-  try {
-    const key = Buffer.from('38346591', 'ascii');
-    const decipher = crypto.createDecipheriv('des-ecb', key, null);
-    decipher.setAutoPadding(true);
-    let decrypted = decipher.update(encryptedMediaUrl, 'base64', 'utf8');
-    decrypted += decipher.final('utf8');
-
-    // Upgrade ke kualitas audio tertinggi (320kbps MP3/AAC CDN resmi)
-    return decrypted
-      .replace('_96.mp4', '_320.mp3')
-      .replace('_96.mp3', '_320.mp3')
-      .replace('_160.mp4', '_320.mp3')
-      .replace('_160.mp3', '_320.mp3');
-  } catch (error) {
-    return null;
-  }
-}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -33,109 +9,144 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
   }
 
-  // =========================================================================
-  // ENGINE 1: NATIVE JIOSAAVN DIRECT OFFICIAL API + LOCAL CRYPTO DECRYPTION
-  // (100% Lagu Asli Studio, Tanpa Domain Mirror Pihak Ketiga)
-  // =========================================================================
-  try {
-    const searchUrl = `https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=web6dot0&q=${encodeURIComponent(
-      query
-    )}`;
+  const exactQuery = query.toLowerCase().includes('official') ? query : `${query} official audio`;
 
-    const searchRes = await axios.get(searchUrl, {
-      timeout: 6000,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      },
-    });
+  // ============================================================================
+  // DAFTAR NODE CLUSTER INVIDIOUS & PIPED (Bypass Bot Guard YouTube Otomatis)
+  // Server-server ini menggunakan residential IP bersih yang tidak diblokir YouTube
+  // ============================================================================
+  const invidiousNodes = [
+    'https://inv.tux.zone',
+    'https://invidious.nerdvpn.de',
+    'https://invidious.drgns.space',
+    'https://inv.nocomment.life',
+    'https://invidious.perennialte.ch',
+    'https://invidious.privacydev.net',
+  ];
 
-    const results = searchRes.data?.results;
-    if (Array.isArray(results) && results.length > 0) {
-      const song = results[0];
+  const pipedNodes = [
+    'https://api.piped.privacydev.net',
+    'https://pipedapi.kavin.rocks',
+    'https://api.piped.projectsegfau.lt',
+  ];
 
-      // Ambil encrypted media URL langsung atau dari detail lagu
-      let encryptedUrl = song.more_info?.encrypted_media_url;
+  let videoId = '';
+  let title = query;
+  let artist = 'Official Artist';
+  let durationSeconds = 240;
 
-      if (!encryptedUrl && song.id) {
-        const detailRes = await axios.get(
-          `https://www.jiosaavn.com/api.php?__call=song.getDetails&pids=${song.id}&_format=json`,
+  // 1. CARI VIDEO ID RESMI (TULUS OFFICIAL AUDIO)
+  for (const node of invidiousNodes) {
+    try {
+      const searchRes = await axios.get(
+        `${node}/api/v1/search?q=${encodeURIComponent(exactQuery)}&type=video`,
+        { timeout: 4000 }
+      );
+
+      const items = searchRes.data;
+      if (Array.isArray(items) && items.length > 0) {
+        videoId = items[0].videoId;
+        title = items[0].title || query;
+        artist = items[0].author || 'Official Artist';
+        durationSeconds = Number(items[0].lengthSeconds) || 240;
+        break;
+      }
+    } catch (e) {
+      continue; // Jika 1 node sibuk/down, langsung loncat ke node berikutnya dalam hitungan milidetik
+    }
+  }
+
+  // Fallback pencarian ID via Piped jika semua Invidious sibuk
+  if (!videoId) {
+    for (const node of pipedNodes) {
+      try {
+        const searchRes = await axios.get(
+          `${node}/search?q=${encodeURIComponent(exactQuery)}&filter=music_songs`,
           { timeout: 4000 }
         );
-        const detailData = detailRes.data?.[song.id];
-        encryptedUrl = detailData?.more_info?.encrypted_media_url;
+        const items = searchRes.data?.items;
+        if (Array.isArray(items) && items.length > 0) {
+          videoId = items[0].url?.replace('/watch?v=', '') || items[0].videoId;
+          title = items[0].title || query;
+          artist = items[0].uploaderName || 'Official Artist';
+          durationSeconds = Number(items[0].duration) || 240;
+          break;
+        }
+      } catch (e) {
+        continue;
       }
+    }
+  }
 
-      if (encryptedUrl) {
-        const streamUrl = decryptJioSaavnUrl(encryptedUrl);
-        if (streamUrl) {
-          // Ambil nama artis resmi
-          const artistName =
-            song.more_info?.artistMap?.primary_artists?.[0]?.name ||
-            song.more_info?.singers ||
-            'Official Artist';
+  if (!videoId) {
+    return NextResponse.json(
+      { error: 'Lagu tidak ditemukan di server YouTube Official' },
+      { status: 404 }
+    );
+  }
 
-          // Upgrade resolusi thumbnail ke High-Res (500x500)
-          const thumbnail = (song.image || '').replace('150x150', '500x500');
+  const thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
+  // 2. EKSTRAKSI DIRECT STREAM AUDIO MP3/OPUS (100% FULL SONG TANPA BOT CHECK)
+  // Coba ekstraksi dari cluster Invidious terlebih dahulu
+  for (const node of invidiousNodes) {
+    try {
+      const videoRes = await axios.get(`${node}/api/v1/videos/${videoId}`, { timeout: 4500 });
+      const formats = videoRes.data?.adaptiveFormats;
+
+      if (Array.isArray(formats) && formats.length > 0) {
+        // Filter khusus audio dengan bitrate tertinggi (Studio Quality)
+        const audioFormats = formats
+          .filter((f: any) => f.type && f.type.startsWith('audio'))
+          .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+
+        if (audioFormats.length > 0 && audioFormats[0].url) {
           return NextResponse.json({
             success: true,
-            engine: 'JioSaavn Official Native Decrypted',
-            title: song.title || song.song || query,
-            artist: artistName,
-            streamUrl: streamUrl, // DIRECT CDN OFFICIAL AUDIO 320KBPS!
+            engine: 'YouTube Official Studio (Invidious Cluster)',
+            title: title,
+            artist: artist,
+            streamUrl: audioFormats[0].url, // DIRECT GOOGLEVIDEO AUDIO STREAM FULL DURATION!
             thumbnail: thumbnail,
-            durationSeconds: Number(song.more_info?.duration) || 240,
+            durationSeconds: durationSeconds,
           });
         }
       }
+    } catch (e) {
+      continue;
     }
-  } catch (saavnError: any) {
-    console.warn('Engine 1 (JioSaavn Native) pass:', saavnError?.message);
   }
 
-  // =========================================================================
-  // ENGINE 2: YOUTUBE NATIVE IOS CLIENT BYPASS
-  // (Cadangan untuk lagu indie/J-Pop yang tidak ada di label Saavn)
-  // =========================================================================
-  try {
-    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query + ' official audio')}`;
-    const searchRes = await axios.get(searchUrl, {
-      timeout: 6000,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      },
-    });
+  // Coba ekstraksi dari cluster Piped jika Invidious limit
+  for (const node of pipedNodes) {
+    try {
+      const streamRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 4500 });
+      const audioStreams = streamRes.data?.audioStreams;
 
-    const matches = [...searchRes.data.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g)];
-    const videoId = matches?.[0]?.[1];
+      if (Array.isArray(audioStreams) && audioStreams.length > 0) {
+        const bestAudio = audioStreams.sort(
+          (a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0)
+        )[0];
 
-    if (videoId) {
-      const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-      const info = await ytdl.getInfo(videoUrl, {
-        playerClients: ['IOS'], // Client iOS terbukti paling tahan terhadap Bot Guard
-      } as any);
-
-      const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
-      if (audioFormats && audioFormats.length > 0) {
-        return NextResponse.json({
-          success: true,
-          engine: 'YouTube iOS Native Client',
-          title: info.videoDetails.title || query,
-          artist: info.videoDetails.author?.name || 'Official Artist',
-          streamUrl: audioFormats[0].url,
-          thumbnail: info.videoDetails.thumbnails?.pop()?.url || '',
-          durationSeconds: Number(info.videoDetails.lengthSeconds) || 0,
-        });
+        if (bestAudio?.url) {
+          return NextResponse.json({
+            success: true,
+            engine: 'YouTube Official Studio (Piped Cluster)',
+            title: streamRes.data.title || title,
+            artist: streamRes.data.uploader || artist,
+            streamUrl: bestAudio.url, // DIRECT GOOGLEVIDEO AUDIO STREAM FULL DURATION!
+            thumbnail: thumbnail,
+            durationSeconds: Number(streamRes.data.duration) || durationSeconds,
+          });
+        }
       }
+    } catch (e) {
+      continue;
     }
-  } catch (ytError: any) {
-    console.warn('Engine 2 (YouTube iOS) pass:', ytError?.message);
   }
 
   return NextResponse.json(
-    { error: 'Lagu tidak ditemukan di katalog resmi' },
-    { status: 404 }
+    { error: 'Gagal mengekstrak stream audio dari cluster YouTube' },
+    { status: 502 }
   );
 }
