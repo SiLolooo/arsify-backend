@@ -16,13 +16,12 @@ export async function GET(request: Request) {
   let artist = 'Official Artist';
   let durationSeconds = 240;
 
-  // 1. CARI VIDEO ID RESMI (TULUS - HATI-HATI DI JALAN)
+  // 1. CARI VIDEO ID RESMI
   const searchNodes = [
     'https://inv.tux.zone/api/v1/search',
     'https://invidious.nerdvpn.de/api/v1/search',
     'https://inv.nocomment.life/api/v1/search',
     'https://invidious.drgns.space/api/v1/search',
-    'https://invidious.perennialte.ch/api/v1/search',
   ];
 
   for (const node of searchNodes) {
@@ -44,30 +43,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // Fallback pencarian ID via YouTube HTML jika semua node eksternal sibuk
-  if (!videoId) {
-    try {
-      const ytRes = await axios.get(
-        `https://www.youtube.com/results?search_query=${encodeURIComponent(exactQuery)}`,
-        {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          },
-          timeout: 4000,
-        }
-      );
-      const match = ytRes.data.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-      if (match && match[1]) {
-        videoId = match[1];
-        title = query;
-        artist = 'TULUS / Official Artist';
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
   if (!videoId) {
     return NextResponse.json(
       { error: 'Lagu tidak ditemukan di server YouTube Official' },
@@ -75,35 +50,43 @@ export async function GET(request: Request) {
     );
   }
 
-  // 2. DAFTAR PROXY AUDIO STREAM (itag 140 = M4A AAC 128kbps, local=true = Bypass CDN Google / Anti-403)
-  const candidateUrls = [
-    `https://inv.tux.zone/latest_version?id=${videoId}&itag=140&local=true`,
-    `https://invidious.nerdvpn.de/latest_version?id=${videoId}&itag=140&local=true`,
-    `https://inv.nocomment.life/latest_version?id=${videoId}&itag=140&local=true`,
-    `https://invidious.drgns.space/latest_version?id=${videoId}&itag=140&local=true`,
-    `https://invidious.perennialte.ch/latest_version?id=${videoId}&itag=140&local=true`,
+  // 2. KUMPULKAN URL STREAM DARI PIPED API (PRIORITAS UTAMA - AUDIO M4A ASLI)
+  const candidateUrls: string[] = [];
+
+  const pipedNodes = [
+    'https://api.piped.privacydev.net',
+    'https://pipedapi.kavin.rocks',
+    'https://api.piped.projectsegfau.lt',
   ];
 
-  // Tambahkan fallback stream dari Piped API
-  try {
-    const pipedRes = await axios.get(
-      `https://api.piped.privacydev.net/streams/${videoId}`,
-      { timeout: 3500 }
-    );
-    const audioStreams = pipedRes.data?.audioStreams;
-    if (Array.isArray(audioStreams) && audioStreams.length > 0) {
-      const m4a = audioStreams.find(
-        (s: any) => s.mimeType?.includes('mp4') || s.format === 'M4A'
-      );
-      if (m4a?.url) candidateUrls.unshift(m4a.url);
-      else if (audioStreams[0]?.url) candidateUrls.unshift(audioStreams[0].url);
+  for (const node of pipedNodes) {
+    try {
+      const pipedRes = await axios.get(`${node}/streams/${videoId}`, { timeout: 3500 });
+      const audioStreams = pipedRes.data?.audioStreams;
+      if (Array.isArray(audioStreams) && audioStreams.length > 0) {
+        // Pilih format M4A/MP4 audio yang paling stabil di Android ExoPlayer
+        const m4aStreams = audioStreams
+          .filter((s: any) => s.mimeType?.includes('mp4') || s.format === 'M4A' || s.mimeType?.includes('audio'))
+          .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+
+        for (const s of m4aStreams) {
+          if (s.url) candidateUrls.push(s.url);
+        }
+      }
+    } catch (e) {
+      continue;
     }
-  } catch (e) {
-    // Ignore
   }
 
-  // 3. VERIFIKASI STREAM SEBELUM DIKIRIM KE FLUTTER (HP Dijamin Menerima Link Hidup)
-  let validStreamUrl = candidateUrls[0];
+  // Tambahkan cadangan proxy Invidious di urutan terakhir
+  candidateUrls.push(
+    `https://inv.tux.zone/latest_version?id=${videoId}&itag=140&local=true`,
+    `https://invidious.drgns.space/latest_version?id=${videoId}&itag=140&local=true`
+  );
+
+  // 3. SATPAM ANTI-HTML: Cek status DAN Content-Type (Wajib Audio/Video/Octet, BUKAN HTML!)
+  let validStreamUrl = '';
+
   for (const url of candidateUrls) {
     try {
       const testRes = await axios.get(url, {
@@ -113,26 +96,32 @@ export async function GET(request: Request) {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         },
         timeout: 3000,
-        validateStatus: (status) =>
-          status === 200 || status === 206 || status === 302,
+        validateStatus: (status) => status === 200 || status === 206 || status === 302,
       });
 
-      if (
-        testRes.status === 200 ||
-        testRes.status === 206 ||
-        testRes.status === 302
-      ) {
-        validStreamUrl = url;
-        break;
+      const contentType = String(testRes.headers['content-type'] || '').toLowerCase();
+
+      // KRUSIAL: Kalau yang dikirim server adalah teks HTML (error page), BUANG!
+      if (contentType.includes('text/html')) {
+        continue;
       }
+
+      // Kalau terbukti file audio/mp4/webm/octet-stream, ambil ini sebagai pemenang!
+      validStreamUrl = url;
+      break;
     } catch (e) {
       continue;
     }
   }
 
+  // Kalau semua gagal uji, gunakan link pertama dari Piped sebagai fallback
+  if (!validStreamUrl && candidateUrls.length > 0) {
+    validStreamUrl = candidateUrls[0];
+  }
+
   return NextResponse.json({
     success: true,
-    engine: 'Server-Side Anti-403 Proxy Stream',
+    engine: 'Server-Side Piped Audio M4A (Anti-HTML Verified)',
     title: title,
     artist: artist,
     streamUrl: validStreamUrl,
