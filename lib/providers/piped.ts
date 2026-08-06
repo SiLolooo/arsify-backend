@@ -1,4 +1,9 @@
 import axios from 'axios';
+
+import type {
+  AudioProvider,
+} from './audio-provider';
+
 import type {
   AudioStream,
   TrackInfo,
@@ -19,6 +24,15 @@ interface PipedSearchResult {
   duration?: number;
 }
 
+interface PipedAudioResult {
+  url?: string;
+  mimeType?: string;
+  format?: string;
+  bitrate?: number;
+  contentLength?: number;
+  itag?: number;
+}
+
 function extractVideoId(
   item: PipedSearchResult
 ): string | null {
@@ -27,10 +41,9 @@ function extractVideoId(
   }
 
   if (item.url) {
-    const match =
-      item.url.match(
-        /[?&]v=([a-zA-Z0-9_-]{11})/
-      );
+    const match = item.url.match(
+      /[?&]v=([a-zA-Z0-9_-]{11})/
+    );
 
     if (match?.[1]) {
       return match[1];
@@ -40,187 +53,274 @@ function extractVideoId(
   return null;
 }
 
-export async function searchPiped(
-  query: string
-): Promise<TrackInfo | null> {
+export class PipedAudioProvider
+  implements AudioProvider {
 
-  for (const instance of PIPED_INSTANCES) {
-    try {
-      console.log(
-        `[Piped] Searching instance: ${instance}`
-      );
+  /**
+   * Search track menggunakan Piped.
+   */
+  async search(
+    query: string
+  ): Promise<TrackInfo | null> {
 
-      const response = await axios.get(
-        `${instance}/search`,
-        {
-          params: {
-            q: `${query} official audio`,
-            filter: 'music_songs',
-          },
-          timeout: 6000,
-          validateStatus: (status) =>
-            status >= 200 && status < 300,
-        }
-      );
-
-      const items =
-        response.data?.items;
-
-      if (
-        !Array.isArray(items) ||
-        items.length === 0
-      ) {
+    for (const instance of PIPED_INSTANCES) {
+      try {
         console.log(
-          `[Piped] No results: ${instance}`
+          `[Piped] Searching: ${instance}`
         );
 
-        continue;
-      }
+        const response = await axios.get(
+          `${instance}/search`,
+          {
+            params: {
+              q: `${query} official audio`,
+              filter: 'music_songs',
+            },
 
-      const item =
-        items[0] as PipedSearchResult;
+            timeout: 6000,
 
-      const videoId =
-        extractVideoId(item);
-
-      if (!videoId) {
-        console.log(
-          `[Piped] Result has no video ID: ${instance}`
+            validateStatus: (status) =>
+              status >= 200 &&
+              status < 300,
+          }
         );
 
-        continue;
-      }
+        const items =
+          response.data?.items;
 
-      const track: TrackInfo = {
-        id: videoId,
-        title:
-          item.title ||
-          query,
-        artist:
-          item.uploaderName ||
-          'Unknown Artist',
-        thumbnail:
-          item.thumbnail ||
-          `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-        durationSeconds:
-          Number(item.duration) || 0,
-      };
-
-      console.log(
-        `[Piped] Search success: ${track.title}`
-      );
-
-      return track;
-
-    } catch (error: any) {
-
-      console.error(
-        `[Piped] Search failed: ${instance}`,
-        {
-          status:
-            error?.response?.status,
-          message:
-            error?.message,
-        }
-      );
-
-      continue;
-    }
-  }
-
-  console.error(
-    '[Piped] All search instances failed'
-  );
-
-  return null;
-}
-
-export async function getPipedAudioStreams(
-  videoId: string
-): Promise<AudioStream[]> {
-
-  for (const instance of PIPED_INSTANCES) {
-    try {
-      console.log(
-        `[Piped] Getting streams from: ${instance}`
-      );
-
-      const response = await axios.get(
-        `${instance}/streams/${videoId}`,
-        {
-          timeout: 10000,
-          validateStatus: (status) =>
-            status >= 200 && status < 300,
-        }
-      );
-
-      const audioStreams =
-        response.data?.audioStreams;
-
-      if (
-        !Array.isArray(audioStreams) ||
-        audioStreams.length === 0
-      ) {
-        console.log(
-          `[Piped] No audio streams: ${instance}`
-        );
-
-        continue;
-      }
-
-      const streams: AudioStream[] =
-        audioStreams
-          .map(
-            (stream: any): AudioStream => ({
-              url: stream.url,
-              mimeType:
-                stream.mimeType,
-              format:
-                stream.format,
-              bitrate:
-                Number(stream.bitrate) ||
-                0,
-              contentLength:
-                Number(
-                  stream.contentLength
-                ) || undefined,
-              itag:
-                Number(stream.itag) ||
-                undefined,
-            })
-          )
-          .filter(
-            (stream: AudioStream) =>
-              Boolean(stream.url)
+        if (
+          !Array.isArray(items) ||
+          items.length === 0
+        ) {
+          console.log(
+            `[Piped] No results: ${instance}`
           );
 
-      if (streams.length > 0) {
+          continue;
+        }
+
+        const item =
+          items[0] as PipedSearchResult;
+
+        const videoId =
+          extractVideoId(item);
+
+        if (!videoId) {
+          console.log(
+            `[Piped] No video ID: ${instance}`
+          );
+
+          continue;
+        }
+
+        const track: TrackInfo = {
+          id: videoId,
+
+          title:
+            item.title ||
+            query,
+
+          artist:
+            item.uploaderName ||
+            'Unknown Artist',
+
+          thumbnail:
+            item.thumbnail ||
+            `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+
+          durationSeconds:
+            Number(item.duration) || 0,
+        };
+
         console.log(
-          `[Piped] Found ${streams.length} audio streams`
+          `[Piped] Search success:`,
+          {
+            id: track.id,
+            title: track.title,
+            artist: track.artist,
+          }
         );
 
-        return streams;
+        return track;
+
+      } catch (error: any) {
+
+        console.error(
+          `[Piped] Search failed: ${instance}`,
+          {
+            status:
+              error?.response?.status,
+
+            message:
+              error?.message,
+          }
+        );
+
+        continue;
       }
-
-    } catch (error: any) {
-
-      console.error(
-        `[Piped] Stream request failed: ${instance}`,
-        {
-          status:
-            error?.response?.status,
-          message:
-            error?.message,
-        }
-      );
-
-      continue;
     }
+
+    console.error(
+      '[Piped] All search instances failed'
+    );
+
+    return null;
   }
 
-  console.error(
-    `[Piped] All stream instances failed for ${videoId}`
-  );
+  /**
+   * Mendapatkan audio stream berdasarkan TrackInfo.
+   */
+  async getAudioStream(
+    track: TrackInfo
+  ): Promise<AudioStream | null> {
 
-  return [];
+    for (const instance of PIPED_INSTANCES) {
+      try {
+        console.log(
+          `[Piped] Getting streams: ${instance}`
+        );
+
+        const response = await axios.get(
+          `${instance}/streams/${track.id}`,
+          {
+            timeout: 10000,
+
+            validateStatus: (status) =>
+              status >= 200 &&
+              status < 300,
+          }
+        );
+
+        const audioStreams =
+          response.data?.audioStreams;
+
+        if (
+          !Array.isArray(audioStreams) ||
+          audioStreams.length === 0
+        ) {
+          console.log(
+            `[Piped] No audio streams: ${instance}`
+          );
+
+          continue;
+        }
+
+        const streams: AudioStream[] =
+          audioStreams
+            .map(
+              (
+                stream: PipedAudioResult
+              ): AudioStream => ({
+                url: stream.url || '',
+
+                mimeType:
+                  stream.mimeType ||
+                  'audio/mp4',
+
+                format:
+                  stream.format,
+
+                bitrate:
+                  Number(
+                    stream.bitrate
+                  ) || 0,
+
+                contentLength:
+                  Number(
+                    stream.contentLength
+                  ) || undefined,
+
+                itag:
+                  Number(
+                    stream.itag
+                  ) || undefined,
+              })
+            )
+            .filter(
+              (stream) =>
+                Boolean(stream.url)
+            );
+
+        if (streams.length === 0) {
+          continue;
+        }
+
+        /**
+         * Prioritaskan M4A / MP4 audio.
+         */
+        const preferredStream =
+          streams
+            .filter(
+              (stream) =>
+                stream.mimeType
+                  ?.includes('mp4') ||
+                stream.format === 'M4A'
+            )
+            .sort(
+              (a, b) =>
+                (b.bitrate || 0) -
+                (a.bitrate || 0)
+            )[0];
+
+        if (preferredStream) {
+          console.log(
+            `[Piped] Selected audio stream`,
+            {
+              mimeType:
+                preferredStream.mimeType,
+
+              format:
+                preferredStream.format,
+
+              bitrate:
+                preferredStream.bitrate,
+
+              itag:
+                preferredStream.itag,
+            }
+          );
+
+          return preferredStream;
+        }
+
+        /**
+         * Fallback:
+         * gunakan stream dengan bitrate
+         * paling tinggi.
+         */
+        streams.sort(
+          (a, b) =>
+            (b.bitrate || 0) -
+            (a.bitrate || 0)
+        );
+
+        console.log(
+          `[Piped] Selected fallback audio stream`
+        );
+
+        return streams[0];
+
+      } catch (error: any) {
+
+        console.error(
+          `[Piped] Stream request failed: ${instance}`,
+          {
+            status:
+              error?.response?.status,
+
+            message:
+              error?.message,
+          }
+        );
+
+        continue;
+      }
+    }
+
+    console.error(
+      `[Piped] All stream instances failed for ${track.id}`
+    );
+
+    return null;
+  }
 }

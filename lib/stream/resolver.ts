@@ -11,40 +11,69 @@ export async function resolveStream(
   query: string
 ): Promise<ResolvedStream | null> {
 
+  const normalizedQuery =
+    query.trim();
+
+  if (!normalizedQuery) {
+    console.warn(
+      '[Resolver] Empty query'
+    );
+
+    return null;
+  }
+
   console.log(
-    `[Resolver] Searching: ${query}`
+    `[Resolver] Searching: ${normalizedQuery}`
   );
 
+  // 1. Cari track
   const track =
-    await provider.search(query);
+    await provider.search(
+      normalizedQuery
+    );
 
   if (!track) {
-    console.log(
-      '[Resolver] Track not found'
+    console.warn(
+      `[Resolver] Track not found: ${normalizedQuery}`
     );
 
     return null;
   }
 
   console.log(
-    `[Resolver] Track found: ${track.title}`
+    `[Resolver] Track found`,
+    {
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+    }
   );
 
+  // 2. Cari audio stream
   const audio =
-    await provider.getAudioStream(track);
+    await provider.getAudioStream(
+      track
+    );
 
   if (!audio) {
-    console.log(
-      '[Resolver] Audio stream not found'
+    console.warn(
+      `[Resolver] Audio stream not found: ${track.id}`
     );
 
     return null;
   }
 
   console.log(
-    '[Resolver] Audio stream resolved'
+    `[Resolver] Audio stream resolved`,
+    {
+      mimeType: audio.mimeType,
+      format: audio.format,
+      bitrate: audio.bitrate,
+      itag: audio.itag,
+    }
   );
 
+  // 3. Gabungkan track + audio
   return {
     track,
     audio,

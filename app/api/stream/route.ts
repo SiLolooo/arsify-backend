@@ -1,136 +1,117 @@
-import {
-  NextResponse,
-} from 'next/server';
+import { NextResponse } from 'next/server';
 
-import {
-  createReadStream,
-  statSync,
-} from 'fs';
-
-import path from 'path';
+import { PipedAudioProvider } from '@/lib/providers/piped';
+import { resolveStream } from '@/lib/stream/resolver';
 
 export async function GET(
   request: Request
 ) {
   try {
-    const filePath = path.join(
-      process.cwd(),
-      'public',
-      'audio',
-      'test.mp3'
-    );
+    const { searchParams } =
+      new URL(request.url);
 
-    const stats = statSync(filePath);
+    const query =
+      searchParams.get('query');
 
-    const fileSize = stats.size;
-
-    const range =
-      request.headers.get('range');
-
-    if (!range) {
-      const stream =
-        createReadStream(filePath);
-
-      return new NextResponse(
-        stream as any,
+    if (!query?.trim()) {
+      return NextResponse.json(
         {
-          status: 200,
-          headers: {
-            'Content-Type':
-              'audio/mpeg',
-
-            'Content-Length':
-              fileSize.toString(),
-
-            'Accept-Ranges':
-              'bytes',
-
-            'Cache-Control':
-              'no-cache',
-          },
-        }
-      );
-    }
-
-    const match = range.match(
-      /bytes=(\d+)-(\d*)/
-    );
-
-    if (!match) {
-      return new NextResponse(
-        'Invalid Range header',
-        {
-          status: 416,
-        }
-      );
-    }
-
-    const start =
-      Number(match[1]);
-
-    let end = match[2]
-      ? Number(match[2])
-      : fileSize - 1;
-
-    end = Math.min(
-      end,
-      fileSize - 1
-    );
-
-    if (
-      start >= fileSize ||
-      start > end
-    ) {
-      return new NextResponse(
-        'Range Not Satisfiable',
-        {
-          status: 416,
-          headers: {
-            'Content-Range':
-              `bytes */${fileSize}`,
-          },
-        }
-      );
-    }
-
-    const chunkSize =
-      end - start + 1;
-
-    const stream =
-      createReadStream(
-        filePath,
-        {
-          start,
-          end,
-        }
-      );
-
-    return new NextResponse(
-      stream as any,
-      {
-        status: 206,
-        headers: {
-          'Content-Type':
-            'audio/mpeg',
-
-          'Content-Length':
-            chunkSize.toString(),
-
-          'Content-Range':
-            `bytes ${start}-${end}/${fileSize}`,
-
-          'Accept-Ranges':
-            'bytes',
-
-          'Cache-Control':
-            'no-cache',
+          success: false,
+          error:
+            'Query parameter is required',
         },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    console.log(
+      `[API /stream] Query: ${query}`
+    );
+
+    // Provider
+    const provider =
+      new PipedAudioProvider();
+
+    // Resolver
+    const result =
+      await resolveStream(
+        provider,
+        query
+      );
+
+    if (!result) {
+      console.log(
+        '[API /stream] Stream not found'
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Audio stream not found',
+        },
+        {
+          status: 404,
+        }
+      );
+    }
+
+    const {
+      track,
+      audio,
+    } = result;
+
+    /*
+     * Direct URL dari Piped tidak diberikan
+     * langsung ke Flutter.
+     *
+     * Kita bungkus melalui /api/proxy.
+     */
+    const proxyUrl =
+      new URL(
+        '/api/proxy',
+        request.url
+      );
+
+    proxyUrl.searchParams.set(
+      'url',
+      audio.url
+    );
+
+    console.log(
+      '[API /stream] Resolved:',
+      {
+        title: track.title,
+        artist: track.artist,
+        mimeType: audio.mimeType,
+        format: audio.format,
+        bitrate: audio.bitrate,
       }
     );
 
-  } catch (error) {
+    return NextResponse.json({
+      success: true,
+
+      track: {
+        id: track.id,
+        title: track.title,
+        artist: track.artist,
+        thumbnail:
+          track.thumbnail,
+        durationSeconds:
+          track.durationSeconds,
+      },
+
+      streamUrl:
+        proxyUrl.toString(),
+    });
+
+  } catch (error: any) {
+
     console.error(
-      '[Test Audio]',
+      '[API /stream] Error:',
       error
     );
 
@@ -138,10 +119,10 @@ export async function GET(
       {
         success: false,
         error:
-          'Audio file not found',
+          'Failed to resolve audio stream',
       },
       {
-        status: 404,
+        status: 500,
       }
     );
   }
