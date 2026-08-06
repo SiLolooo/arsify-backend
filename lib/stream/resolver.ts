@@ -1,24 +1,25 @@
-import {
-  getPipedAudioStreams,
-  searchPiped,
-} from '../providers/piped';
+import type {
+  AudioProvider,
+} from '../providers/audio-provider';
 
 import type {
-  AudioStream,
   ResolvedStream,
 } from '../types/stream';
 
 export async function resolveStream(
+  provider: AudioProvider,
   query: string
 ): Promise<ResolvedStream | null> {
+
   console.log(
     `[Resolver] Searching: ${query}`
   );
 
-  const track = await searchPiped(query);
+  const track =
+    await provider.search(query);
 
   if (!track) {
-    console.error(
+    console.log(
       '[Resolver] Track not found'
     );
 
@@ -26,75 +27,26 @@ export async function resolveStream(
   }
 
   console.log(
-    `[Resolver] Found: ${track.title}`
+    `[Resolver] Track found: ${track.title}`
   );
 
-  const streams =
-    await getPipedAudioStreams(
-      track.videoId
-    );
+  const audio =
+    await provider.getAudioStream(track);
 
-  if (streams.length === 0) {
-    console.error(
-      '[Resolver] No audio streams found'
-    );
-
-    return null;
-  }
-
-  const audioStream =
-    selectBestAudioStream(streams);
-
-  if (!audioStream) {
-    console.error(
-      '[Resolver] No compatible audio stream'
+  if (!audio) {
+    console.log(
+      '[Resolver] Audio stream not found'
     );
 
     return null;
   }
 
   console.log(
-    `[Resolver] Selected stream:`,
-    {
-      mimeType: audioStream.mimeType,
-      format: audioStream.format,
-      bitrate: audioStream.bitrate,
-      itag: audioStream.itag,
-    }
+    '[Resolver] Audio stream resolved'
   );
 
   return {
     track,
-    stream: audioStream,
+    audio,
   };
-}
-
-function selectBestAudioStream(
-  streams: AudioStream[]
-): AudioStream | null {
-  const compatibleStreams =
-    streams.filter((stream) => {
-      if (!stream.mimeType) {
-        return false;
-      }
-
-      return (
-        stream.mimeType.includes(
-          'audio/mp4'
-        ) ||
-        stream.mimeType.includes(
-          'audio/webm'
-        )
-      );
-    });
-
-  if (compatibleStreams.length === 0) {
-    return null;
-  }
-
-  return compatibleStreams.sort(
-    (a, b) =>
-      (b.bitrate || 0) -
-      (a.bitrate || 0)
-  )[0];
 }

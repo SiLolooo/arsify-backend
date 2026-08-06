@@ -1,77 +1,148 @@
-import { NextResponse } from 'next/server';
-import { resolveStream } from '@/lib/stream/resolver';
+import {
+  NextResponse,
+} from 'next/server';
 
-export async function GET(request: Request) {
+import {
+  createReadStream,
+  statSync,
+} from 'fs';
+
+import path from 'path';
+
+export async function GET(
+  request: Request
+) {
   try {
-    const { searchParams } = new URL(request.url);
+    const filePath = path.join(
+      process.cwd(),
+      'public',
+      'audio',
+      'test.mp3'
+    );
 
-    const query = searchParams.get('query');
+    const stats = statSync(filePath);
 
-    if (!query || query.trim().length === 0) {
-      return NextResponse.json(
+    const fileSize = stats.size;
+
+    const range =
+      request.headers.get('range');
+
+    if (!range) {
+      const stream =
+        createReadStream(filePath);
+
+      return new NextResponse(
+        stream as any,
         {
-          success: false,
-          error: 'Query parameter is required',
-        },
-        { status: 400 }
+          status: 200,
+          headers: {
+            'Content-Type':
+              'audio/mpeg',
+
+            'Content-Length':
+              fileSize.toString(),
+
+            'Accept-Ranges':
+              'bytes',
+
+            'Cache-Control':
+              'no-cache',
+          },
+        }
       );
     }
 
-    console.log(
-      `[API /stream] Resolving: ${query}`
+    const match = range.match(
+      /bytes=(\d+)-(\d*)/
     );
 
-    const result = await resolveStream(
-      query.trim()
-    );
-
-    if (!result) {
-      return NextResponse.json(
+    if (!match) {
+      return new NextResponse(
+        'Invalid Range header',
         {
-          success: false,
-          error: 'Audio stream not found',
-        },
-        { status: 404 }
+          status: 416,
+        }
       );
     }
 
-    console.log(
-      `[API /stream] Resolved: ${result.track.title}`
+    const start =
+      Number(match[1]);
+
+    let end = match[2]
+      ? Number(match[2])
+      : fileSize - 1;
+
+    end = Math.min(
+      end,
+      fileSize - 1
     );
 
-    return NextResponse.json({
-      success: true,
+    if (
+      start >= fileSize ||
+      start > end
+    ) {
+      return new NextResponse(
+        'Range Not Satisfiable',
+        {
+          status: 416,
+          headers: {
+            'Content-Range':
+              `bytes */${fileSize}`,
+          },
+        }
+      );
+    }
 
-      track: {
-        videoId: result.track.videoId,
-        title: result.track.title,
-        artist: result.track.artist,
-        thumbnail: result.track.thumbnail,
-        durationSeconds:
-          result.track.durationSeconds,
-      },
+    const chunkSize =
+      end - start + 1;
 
-      stream: {
-        url: result.stream.url,
-        mimeType: result.stream.mimeType,
-        format: result.stream.format,
-        bitrate: result.stream.bitrate,
-        itag: result.stream.itag,
-      },
-    });
+    const stream =
+      createReadStream(
+        filePath,
+        {
+          start,
+          end,
+        }
+      );
+
+    return new NextResponse(
+      stream as any,
+      {
+        status: 206,
+        headers: {
+          'Content-Type':
+            'audio/mpeg',
+
+          'Content-Length':
+            chunkSize.toString(),
+
+          'Content-Range':
+            `bytes ${start}-${end}/${fileSize}`,
+
+          'Accept-Ranges':
+            'bytes',
+
+          'Cache-Control':
+            'no-cache',
+        },
+      }
+    );
 
   } catch (error) {
     console.error(
-      '[API /stream] Unexpected error:',
+      '[Test Audio]',
       error
     );
 
     return NextResponse.json(
       {
         success: false,
-        error: 'Internal server error',
+        error:
+          'Audio file not found',
       },
-      { status: 500 }
+      {
+        status: 404,
+      }
     );
   }
 }

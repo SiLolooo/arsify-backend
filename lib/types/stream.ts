@@ -1,14 +1,14 @@
 export interface TrackInfo {
-  videoId: string;
+  id: string;
   title: string;
   artist: string;
-  thumbnail: string;
-  durationSeconds: number;
+  thumbnail?: string;
+  durationSeconds?: number;
 }
 
 export interface AudioStream {
   url: string;
-  mimeType?: string;
+  mimeType: string;
   format?: string;
   bitrate?: number;
   contentLength?: number;
@@ -17,5 +17,5 @@ export interface AudioStream {
 
 export interface ResolvedStream {
   track: TrackInfo;
-  stream: AudioStream;
+  audio: AudioStream;
 }

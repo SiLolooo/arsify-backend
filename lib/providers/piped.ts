@@ -92,7 +92,7 @@ export async function searchPiped(
       }
 
       const track: TrackInfo = {
-        videoId,
+        id: videoId,
         title:
           item.title ||
           query,
